@@ -4,3 +4,4 @@ api
 pkg/*.wasm
 pkg/*.zip
 pkg/ui
+pkg/ui-call

@@ -7,8 +7,11 @@
     "dev": "vite --port 3000",
     "start": "vite --port 3000",
     "build": "tsc && vite build",
+    "copy-caller-utils": "cp ../target/ui/caller-utils.ts ui-call/src/ || true",
+    "build:ui-call": "npm run copy-caller-utils && cd ui-call && npm install && npm run build",
     "copy": "mkdir -p ../pkg/ui && rm -rf ../pkg/ui/* && cp -r dist/* ../pkg/ui/",
-    "build:copy": "npm run build && npm run copy",
+    "copy:ui-call": "mkdir -p ../pkg/ui-call && rm -rf ../pkg/ui-call/* && cp -r ui-call/dist/* ../pkg/ui-call/",
+    "build:copy": "npm run build && npm run build:ui-call && npm run copy && npm run copy:ui-call",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview"
   },

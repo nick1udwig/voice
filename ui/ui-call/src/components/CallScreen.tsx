@@ -1,20 +1,20 @@
 import React, { useEffect, useState } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
 import { useVoiceStore } from '../store/voice';
 
 export const CallScreen: React.FC = () => {
-  const { callId } = useParams<{ callId: string }>();
-  const navigate = useNavigate();
+  // Extract call ID from the URL path
+  // URL format: /voice:voice:sys/call/{call-id}
+  const pathParts = window.location.pathname.split('/');
+  const callId = pathParts[pathParts.length - 1] || window.VOICE_CALL_ID || '';
+  
   const { 
     joinCall, 
-    currentCall,
     participants,
     chatMessages,
     myRole,
     isMuted,
     toggleMute,
-    sendChatMessage,
-    nodeConnected
+    sendChatMessage
   } = useVoiceStore();
 
   const [message, setMessage] = useState('');
@@ -26,15 +26,6 @@ export const CallScreen: React.FC = () => {
     }
   }, [callId, joinCall]);
 
-  // Check if we're in a direct browser access scenario (loaded from /call/*)
-  useEffect(() => {
-    // Check if we have a call ID embedded by the backend
-    if ((window as any).VOICE_CALL_ID && !callId) {
-      const embeddedCallId = (window as any).VOICE_CALL_ID;
-      navigate(`/${embeddedCallId}`);
-    }
-  }, [callId, navigate]);
-
   const handleSendMessage = (e: React.FormEvent) => {
     e.preventDefault();
     if (message.trim() && (myRole === 'Chatter' || myRole === 'Speaker' || myRole === 'Admin')) {
@@ -44,14 +35,14 @@ export const CallScreen: React.FC = () => {
   };
 
   const handleLeaveCall = () => {
-    // TODO: Implement leave call
-    navigate('/');
+    // Redirect back to main app or close window
+    window.location.href = '/';
   };
 
   if (!callId) {
     return (
       <div className="call-screen">
-        <h2>Loading...</h2>
+        <h2>No call ID provided</h2>
       </div>
     );
   }

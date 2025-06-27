@@ -18,6 +18,15 @@ function AppContent() {
   const { setApi, setNodeConnected } = useVoiceStore();
 
   useEffect(() => {
+    // Check if we have an auth token from a node handshake
+    const urlParams = new URLSearchParams(window.location.search);
+    const authToken = urlParams.get('auth');
+    
+    if (authToken) {
+      // Store the auth token for authenticated connection
+      sessionStorage.setItem('nodeAuthToken', authToken);
+    }
+
     if (window.our?.node && window.our?.process) {
       const api = new HyperwareClientApi({
         uri: WEBSOCKET_URL,
@@ -39,6 +48,7 @@ function AppContent() {
 
       setApi(api);
     } else {
+      // For unauthenticated browser users
       setNodeConnected(false);
     }
   }, [setApi, setNodeConnected]);
