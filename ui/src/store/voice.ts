@@ -58,14 +58,16 @@ export const useVoiceStore = create<VoiceStore>((set, get) => ({
       const response = await fetch(`${BASE_URL}/api/create-call`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ default_role: defaultRole }),
+        body: JSON.stringify({ CreateCall: { default_role: defaultRole } }),
       });
       
       if (response.ok) {
         const result = await response.json();
         console.log('createCall response:', result);
-        if (result.id) {
-          window.location.href = `${BASE_URL}/${result.id}`;
+        if ('Ok' in result && result.Ok.id) {
+          window.location.href = `${BASE_URL}/${result.Ok.id}`;
+        } else if ('Err' in result) {
+          console.error('Create call error:', result.Err);
         }
       }
     } catch (error) {
@@ -81,16 +83,16 @@ export const useVoiceStore = create<VoiceStore>((set, get) => ({
       const response = await fetch(`${BASE_URL}/api/join-call`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ call_id: callId, node_auth: null }),
+        body: JSON.stringify({ JoinCall: { call_id: callId, node_auth: null } }),
       });
       
       if (response.ok) {
         const result = await response.json();
         console.log('joinCall response:', result);
-        if (result.participant_id) {
+        if ('Ok' in result && result.Ok.participant_id) {
           set({ 
-            myParticipantId: result.participant_id,
-            myRole: result.role,
+            myParticipantId: result.Ok.participant_id,
+            myRole: result.Ok.role,
           });
           
           // Connect to WebSocket
@@ -104,8 +106,8 @@ export const useVoiceStore = create<VoiceStore>((set, get) => ({
             // Authenticate
             ws.send(JSON.stringify({
               Authenticate: {
-                participant_id: result.participant_id,
-                auth_token: result.auth_token
+                participant_id: result.Ok.participant_id,
+                auth_token: result.Ok.auth_token
               }
             }));
             set({ wsConnection: ws, connectionStatus: 'connected' });
@@ -130,6 +132,8 @@ export const useVoiceStore = create<VoiceStore>((set, get) => ({
             console.error('WebSocket URL:', ws.url);
             set({ connectionStatus: 'disconnected' });
           };
+        } else if ('Err' in result) {
+          console.error('Join call error:', result.Err);
         }
       }
     } catch (error) {
