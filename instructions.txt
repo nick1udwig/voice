@@ -1,0 +1,21 @@
+# instructions.txt
+
+## Goal
+
+- [ ] voice call with listeners
+  - [ ] use best practices for voice call software
+  - [ ] start a call from a direct node
+  - [ ] anyone can join to listen from browser (ws connection)
+  - [ ] anyone with link can join (endpoint is /call:voice:sys/<call-id> w call-id a `-`-concatenated list of three random dictionary words generated per-call, e.g. `banana-hello-helicopter`)
+  - [ ] 4 roles: listener, chatter, speaker, admin
+  - [ ] there is a chat as well. chatter+ can type in chat
+  - [ ] speaker+ can speak
+  - [ ] admin can promote/demote
+  - [ ] if joining from browser, identity is a random dictionary word prepended with `pleb-` i.e. `pleb-cat` assigned by host (there cannot be two of the same id)
+  - [ ] can also join by plugging link into own node's /call:voice:sys, in which case nodes negotiate connection and node id is associated with browser connection to host (i.e. if my node's identity is `foo.os` and `host.os` is hosting a call, a handshake occurs between `foo.os` and `host.os` and then a key is passed along with browser connection request that lets `host.os` know that browser is `foo.os` and to assign `foo.os` as name for that participant)
+  - [ ] thus there are two pages served by ui:
+    - [ ] initial splash screen at `/call:voice:sys` served with default binding config (-> only viewable by that node operator)
+      - [ ] has button to Host a Call (with option to set default role to listener, chatter, speaker; default option is chatter)
+      - [ ] has button to Join a Call with an input box for link
+    - [ ] call screen at `/call:voice:sys/<call-id>`
+      - [ ] displays chat, participant list with roles, mute button if speaker+ (default on), admin buttons in participant list if admin (promote/demote)
