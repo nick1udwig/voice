@@ -3,7 +3,7 @@ import { BrowserRouter as Router, Routes, Route, useNavigate, useParams } from "
 import HyperwareClientApi from "@hyperware-ai/client-api";
 import "./App.css";
 import { SplashScreen } from "./components/SplashScreen";
-import { CallScreen } from "./components/CallScreen";
+import { CallScreenWrapper } from "./components/CallScreenWrapper";
 import { useVoiceStore } from "./store/voice";
 
 const BASE_URL = import.meta.env.BASE_URL;
@@ -56,7 +56,7 @@ function AppContent() {
   return (
     <Routes>
       <Route path="/" element={<SplashScreen />} />
-      <Route path="/:callId" element={<CallScreen />} />
+      <Route path="/:callId" element={<CallScreenWrapper />} />
     </Routes>
   );
 }

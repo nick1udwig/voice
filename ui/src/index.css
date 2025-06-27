@@ -4,28 +4,33 @@
   font-weight: 400;
 
   color-scheme: light dark;
-  
-  /* Dark mode colors (default) */
-  --text-color: rgba(255, 255, 255, 0.87);
-  --text-secondary: rgba(255, 255, 255, 0.6);
-  --bg-color: #242424;
-  --card-bg: #2a2a2a;
-  --border-color: #3a3a3a;
-  --input-bg: #1a1a1a;
-  --input-border: #3a3a3a;
-  --button-primary: #4b9ad8;
-  --button-primary-hover: #357abd;
-  --button-danger: #f44336;
-  --button-success: #4caf50;
-  --chat-bg: #1a1a1a;
-  
-  color: var(--text-color);
-  background-color: var(--bg-color);
+  color: rgba(255, 255, 255, 0.87);
+  background-color: #1d1d1d;
 
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  
+  /* Color variables */
+  --button-primary: #007bff;
+  --button-primary-hover: #0056b3;
+  --button-success: #28a745;
+  --button-danger: #dc3545;
+  --button-danger-hover: #c82333;
+  --button-info: #17a2b8;
+  --button-info-hover: #138496;
+  --border-color: rgba(255, 255, 255, 0.1);
+  --input-border: rgba(255, 255, 255, 0.1);
+  --input-bg: rgba(0, 0, 0, 0.5);
+  --text-color: rgba(255, 255, 255, 0.87);
+  --text-secondary: rgba(255, 255, 255, 0.6);
+  --chat-bg: rgba(0, 0, 0, 0.5);
+  --card-bg: rgba(255, 255, 255, 0.05);
+  --role-admin: rgba(255, 100, 100, 0.2);
+  --role-speaker: rgba(100, 150, 255, 0.2);
+  --role-chatter: rgba(200, 100, 255, 0.2);
+  --role-listener: rgba(150, 150, 150, 0.2);
 }
 
 a {
@@ -43,72 +48,21 @@ body {
   place-items: center;
   min-width: 320px;
   min-height: 100vh;
-  /* Prevent iOS rubber-band scrolling */
-  position: fixed;
+}
+
+#root {
   width: 100%;
-  height: 100%;
-  overflow: hidden;
+  max-width: 100%;
+  height: 100vh;
+  text-align: center;
 }
 
 h1 {
-  font-size: 2em;
+  font-size: 2.2em;
   line-height: 1.1;
 }
 
-@media (min-width: 768px) {
-  h1 {
-    font-size: 3.2em;
-  }
-}
-
-ul {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-}
-
 button {
-  border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  background-color: darkblue;
-  color: white;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  cursor: pointer;
-  transition: background-color 0.25s;
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
-}
-button:hover {
-  background-color: blue;
-}
-button:focus,
-button:focus-visible {
-  outline: 4px auto -webkit-focus-ring-color;
-}
-
-@media (prefers-color-scheme: light) {
-  :root {
-    /* Light mode colors */
-    --text-color: #213547;
-    --text-secondary: #666666;
-    --bg-color: #ffffff;
-    --card-bg: #f9f9f9;
-    --border-color: #e0e0e0;
-    --input-bg: #ffffff;
-    --input-border: #cccccc;
-    --button-primary: #4b9ad8;
-    --button-primary-hover: #357abd;
-    --button-danger: #f44336;
-    --button-success: #4caf50;
-    --chat-bg: #f5f5f5;
-    
-    color: var(--text-color);
-    background-color: var(--bg-color);
-  }
-  a:hover {
-    color: #747bff;
-  }
 }

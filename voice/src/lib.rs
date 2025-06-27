@@ -1,6 +1,7 @@
 use hyperprocess_macro::hyperprocess;
 use hyperware_process_lib::http::server::{send_ws_push, WsMessageType};
-use hyperware_process_lib::{kiprintln, LazyLoadBlob};
+use hyperware_process_lib::{kiprintln, LazyLoadBlob, Address, our};
+use hyperware_app_common::source;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use rand::seq::SliceRandom;
@@ -158,7 +159,8 @@ pub enum WsServerMessage {
     JoinSuccess { participant_id: String, role: Role, participants: Vec<ParticipantInfo>, chat_history: Vec<ChatMessage> },
     Chat(WsChatMessage),
     ParticipantJoined(WsParticipantJoined),
-    ParticipantLeft(String),
+    #[serde(rename_all = "camelCase")]
+    ParticipantLeft { participant_id: String },
     RoleUpdated(WsRoleUpdate),
     ParticipantMuted(WsParticipantMuted),
     WebrtcSignal(WsWebrtcSignal),
@@ -281,7 +283,20 @@ impl VoiceState {
             if let Some(node_id) = self.node_auth_tokens.get(&auth_token) {
                 (node_id.clone(), node_id.clone(), ConnectionType::Node(node_id.clone()))
             } else {
-                return Err("Invalid authentication token".to_string());
+                // Check if this is the host joining their own call
+                // Extract host node from call ID
+                let host_node = request.call_id
+                    .split('-')
+                    .next()
+                    .unwrap_or("");
+                
+                if host_node == source().node && call.creator_id.is_none() {
+                    // This is the host joining their own call
+                    let node_id = source().node;
+                    (node_id.clone(), node_id.clone(), ConnectionType::Node(node_id))
+                } else {
+                    return Err("Invalid authentication token".to_string());
+                }
             }
         } else {
             let pleb_name = generate_pleb_name(
@@ -364,7 +379,7 @@ impl VoiceState {
             if let Err(e) = hyperware_app_common::get_server().unwrap().unserve_ui("ui-call", vec![&call_path]) {
                 kiprintln!("Failed to unserve UI for call {}: {:?}", request.call_id, e);
             }
-            
+
             self.calls.remove(&request.call_id);
             self.used_pleb_names.remove(&request.call_id);
         }
@@ -402,9 +417,55 @@ impl VoiceState {
         self.join_call(req).await
     }
 
+    #[http(method = "POST", path = "/start-node-handshake")]
+    async fn start_node_handshake(&mut self, url: String) -> Result<String, String> {
+        // Import the generated RPC function and types
+        use caller_utils::voice::node_handshake_remote_rpc;
+        use caller_utils::NodeHandshakeReq as CallerNodeHandshakeReq;
 
-    
-    #[http(method = "POST")]
+        // Extract call ID from the URL
+        // Expected format: "https://<host>/voice:voice:sys/call/<call-id>"
+        let call_id = url
+            .split("/call/")
+            .nth(1)
+            .ok_or_else(|| "Invalid URL format: no call ID found".to_string())?
+            .split('?')  // Remove any query parameters
+            .next()
+            .unwrap_or("")
+            .to_string();
+
+        // Extract host node from the call ID
+        // Call ID format: "<host-node>-word1-word2-word3"
+        let host_node = call_id
+            .split('-')
+            .next()
+            .ok_or_else(|| "Invalid call ID format: no host node found".to_string())?;
+
+        // Build the target address for the host node
+        let target = Address::new(host_node, ("voice", "voice", "sys"));
+
+        // Create the handshake request using the caller_utils type
+        let handshake_req = CallerNodeHandshakeReq {
+            call_id: call_id.clone(),
+        };
+
+        // Send the node handshake request to the host using the generated RPC
+        match node_handshake_remote_rpc(&target, handshake_req).await {
+            Ok(Ok(handshake_resp)) => {
+                // Store the auth token for later use
+                self.node_auth_tokens.insert(handshake_resp.auth_token.clone(), our().node);
+
+                // Redirect to the URL provided by the host, including the auth token
+                let redirect_url = format!("{}?auth={}", handshake_resp.redirect_url, handshake_resp.auth_token);
+                Ok(redirect_url)
+            }
+            Ok(Err(e)) => Err(format!("Handshake failed: {}", e)),
+            Err(e) => Err(format!("Failed to send handshake request: {:?}", e)),
+        }
+    }
+
+    #[local]
+    #[remote]
     async fn node_handshake(&mut self, request: NodeHandshakeReq) -> Result<NodeHandshakeResp, String> {
         // Check if call exists
         if !self.calls.contains_key(&request.call_id) {
@@ -414,17 +475,16 @@ impl VoiceState {
         // Generate auth token for this node
         let auth_token = generate_id();
 
-        // Get the requesting node's identity from the context
-        // In a real implementation, this would come from the Kinode authentication system
-        let node_id = "requesting-node".to_string(); // TODO: Get actual node ID from context
+        // Get the requesting node's identity from the message source
+        let node_id = source().node;
 
         // Store the mapping
-        self.node_auth_tokens.insert(auth_token.clone(), node_id);
+        self.node_auth_tokens.insert(auth_token.clone(), node_id.clone());
 
         // Build redirect URL with auth token
-        // Assuming the host URL is available in context
-        let host_url = "https://voice.example.com"; // TODO: Get actual host URL
-        let redirect_url = format!("{}/call/{}?auth={}", host_url, request.call_id, auth_token);
+        // Use our node's domain for the redirect URL
+        let our_node_id = our().node;
+        let redirect_url = format!("https://{}/voice:voice:sys/call/{}", our_node_id, request.call_id);
 
         Ok(NodeHandshakeResp {
             auth_token,
@@ -460,7 +520,7 @@ impl VoiceState {
             }
         }
     }
-    
+
 
 }
 
@@ -486,9 +546,9 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
                             is_muted: p.is_muted,
                         })
                         .collect();
-                    
+
                     let chat_history = call.chat_history.clone();
-                    
+
                     // Send join success to the authenticating participant
                     send_to_channel(channel_id, WsServerMessage::JoinSuccess {
                         participant_id: participant_id.clone(),
@@ -517,30 +577,53 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
         }
         WsClientMessage::JoinCall { call_id, display_name } => {
             // Case 1: Direct WebSocket join for browser users without a node
-            
+
             // Generate new participant ID
             let participant_id = generate_id();
-            
+
+            // First determine role and if we need to generate a name
+            let (role, is_first_joiner) = {
+                if let Some(call) = state.calls.get_mut(&call_id) {
+                    if call.creator_id.is_none() {
+                        call.creator_id = Some(participant_id.clone());
+                        (Role::Admin, true)
+                    } else {
+                        (call.default_role.clone(), false)
+                    }
+                } else {
+                    println!("ERROR voice: Call not found when trying to join: {}", call_id);
+                    return;
+                }
+            };
+
             // Generate display name if not provided
-            let display_name = display_name.unwrap_or_else(|| generate_pleb_name_for_call(state, &call_id));
-            
+            let display_name = if let Some(name) = display_name {
+                name
+            } else if is_first_joiner {
+                // If this is the first joiner (admin), use "Host" as the display name
+                "Host".to_string()
+            } else {
+                generate_pleb_name_for_call(state, &call_id)
+            };
+
+            // Now add the participant to the call
             if let Some(call) = state.calls.get_mut(&call_id) {
                 // Create new participant
                 let participant = Participant {
                     id: participant_id.clone(),
                     display_name: display_name.clone(),
-                    role: call.default_role.clone(),
+                    role,
                     connection_type: ConnectionType::Browser,
                     is_muted: false,
                 };
-                
+
                 // Add participant to call
                 call.participants.insert(participant_id.clone(), participant.clone());
-                
+
                 // Store connection mapping
                 state.connections.insert(channel_id, participant_id.clone());
                 state.participant_channels.insert(participant_id.clone(), channel_id);
-                
+
                 // Prepare response data
                 let participants: Vec<ParticipantInfo> = call.participants.values()
                     .map(|p| ParticipantInfo {
@@ -550,9 +633,9 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
                         is_muted: p.is_muted,
                     })
                     .collect();
-                
+
                 let chat_history = call.chat_history.clone();
-                
+
                 // Send join success to the joining participant
                 send_to_channel(channel_id, WsServerMessage::JoinSuccess {
                     participant_id: participant_id.clone(),
@@ -560,7 +643,7 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
                     participants,
                     chat_history,
                 });
-                
+
                 // Notify other participants
                 let participant_info = ParticipantInfo {
                     id: participant.id,
@@ -662,7 +745,7 @@ fn generate_call_id(dictionary: &[String]) -> String {
     let words: Vec<String> = dictionary.choose_multiple(&mut rng, 3)
         .map(|s| s.clone())
         .collect();
-    words.join("-")
+    format!("{}-{}", our().node, words.join("-"))
 }
 
 fn generate_pleb_name_for_call(state: &mut VoiceState, call_id: &str) -> String {
@@ -727,7 +810,7 @@ fn handle_disconnect(state: &mut VoiceState, channel_id: u32) {
                 let is_empty = call.participants.is_empty();
 
                 // Prepare notification message
-                let notification = WsServerMessage::ParticipantLeft(participant_id.clone());
+                let notification = WsServerMessage::ParticipantLeft { participant_id: participant_id.clone() };
 
                 // Send notification to remaining participants
                 if !is_empty {
@@ -741,7 +824,7 @@ fn handle_disconnect(state: &mut VoiceState, channel_id: u32) {
                     if let Err(e) = hyperware_app_common::get_server().unwrap().unserve_ui("ui-call", vec![&call_path]) {
                         kiprintln!("Failed to unserve UI for call {}: {:?}", call_id, e);
                     }
-                    
+
                     state.calls.remove(&call_id);
                     state.used_pleb_names.remove(&call_id);
                 }

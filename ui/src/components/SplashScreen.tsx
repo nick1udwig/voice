@@ -13,14 +13,36 @@ export const SplashScreen: React.FC = () => {
     await createCall(defaultRole);
   };
 
-  const handleJoin = () => {
-    // Extract call ID from link or use as-is
-    const callId = joinLink.includes('/') 
-      ? joinLink.split('/').pop() || joinLink
-      : joinLink;
-    
-    if (callId) {
-      navigate(`/${callId}`);
+  const handleJoin = async () => {
+    // Check if it's a full URL with our process path
+    if (joinLink.includes('/voice:voice:sys/call/')) {
+      // This is a full URL that needs node handshake
+      const response = await fetch(`${import.meta.env.BASE_URL}/api`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ StartNodeHandshake: joinLink })
+      });
+      
+      if (response.ok) {
+        const result = await response.json();
+        if (result.Ok) {
+          // Redirect to the URL returned by the backend
+          window.location.href = result.Ok;
+        } else {
+          alert(`Failed to join: ${result.Err}`);
+        }
+      } else {
+        alert('Failed to initiate node handshake');
+      }
+    } else {
+      // Treat as regular call ID
+      const callId = joinLink.includes('/') 
+        ? joinLink.split('/').pop() || joinLink
+        : joinLink;
+      
+      if (callId) {
+        navigate(`/${callId}`);
+      }
     }
   };
 

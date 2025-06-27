@@ -1,66 +1,47 @@
 import { create } from 'zustand';
-import { CallInfo, ParticipantInfo, ChatMessage, Role } from '../../../target/ui/caller-utils';
+import { createBaseVoiceStore, BaseVoiceStore, BaseVoiceState } from '../../shared/store/base-voice';
+import { Role, createCall as createCallApi, joinCall as joinCallApi } from '../../../target/ui/caller-utils';
+// HyperwareClientApi type - using 'any' for now since the exact type isn't critical
+type HyperwareClientApi<T> = any;
 
-interface VoiceStore {
-  // Connection state
-  api: any | null;
+interface ExtendedVoiceState extends BaseVoiceState {
+  api: HyperwareClientApi<Record<string, unknown>> | null;
   nodeConnected: boolean;
-  wsConnection: WebSocket | null;
-  connectionStatus: 'disconnected' | 'connecting' | 'connected';
-
-  // Call state
-  currentCall: CallInfo | null;
-  participants: Map<string, ParticipantInfo>;
-  chatMessages: ChatMessage[];
-  myParticipantId: string | null;
-  myRole: Role | null;
-
-  // WebRTC state
-  peerConnections: Map<string, RTCPeerConnection>;
-  localStream: MediaStream | null;
-  remoteStreams: Map<string, MediaStream>;
-  isMuted: boolean;
-
-  // Actions
-  setApi: (api: any) => void;
-  setNodeConnected: (connected: boolean) => void;
-  createCall: (defaultRole: Role) => Promise<void>;
-  joinCall: (callId: string) => Promise<void>;
-  sendChatMessage: (content: string) => void;
-  toggleMute: () => void;
-  promoteParticipant: (participantId: string, newRole: Role) => void;
-  handleWebSocketMessage: (message: any) => void;
 }
 
+interface ExtendedVoiceActions {
+  setApi: (api: HyperwareClientApi<Record<string, unknown>>) => void;
+  setNodeConnected: (connected: boolean) => void;
+  createCall: (defaultRole: Role) => Promise<void>;
+  joinCall: (callId: string, displayName?: string) => Promise<void>;
+}
+
+export type VoiceStore = ExtendedVoiceState & ExtendedVoiceActions & BaseVoiceStore;
+
 export const useVoiceStore = create<VoiceStore>((set, get) => ({
-  // Initial state
+  // Base store functionality
+  ...createBaseVoiceStore(set, get),
+  
+  // Extended state
   api: null,
   nodeConnected: false,
-  wsConnection: null,
-  connectionStatus: 'disconnected',
-  currentCall: null,
-  participants: new Map(),
-  chatMessages: [],
-  myParticipantId: null,
-  myRole: null,
-  peerConnections: new Map(),
-  localStream: null,
-  remoteStreams: new Map(),
-  isMuted: true,
 
-  // Actions
+  // Extended actions
   setApi: (api) => set({ api }),
   setNodeConnected: (connected) => set({ nodeConnected: connected }),
 
-  createCall: async (defaultRole: Role) => {
+  createCall: async (defaultRole: Role = 'Speaker') => {
     try {
       const BASE_URL = import.meta.env.BASE_URL || '';
-      // Import the generated API function
-      const { createCall } = await import('../../../target/ui/caller-utils');
       
       try {
-        const result = await createCall({ defaultRole });
+        const result = await createCallApi({ defaultRole });
         console.log('createCall response:', result);
+        
+        // Store a special token to indicate this user is the host
+        sessionStorage.setItem('isHost', 'true');
+        sessionStorage.setItem('hostCallId', result.id);
+        
         window.location.href = `${BASE_URL}/${result.id}`;
       } catch (error) {
         console.error('Create call error:', error);
@@ -70,149 +51,87 @@ export const useVoiceStore = create<VoiceStore>((set, get) => ({
     }
   },
 
-  joinCall: async (callId: string) => {
+  joinCall: async (callId: string, displayName?: string) => {
+    // Override base joinCall to use the correct BASE_URL from env
     try {
       const BASE_URL = import.meta.env.BASE_URL || '';
       const isAuthenticated = !!(window as any).our?.node;
       const nodeAuthToken = sessionStorage.getItem('nodeAuthToken');
+      const isHost = sessionStorage.getItem('isHost') === 'true' && sessionStorage.getItem('hostCallId') === callId;
       
       console.log('joinCall - BASE_URL:', BASE_URL);
       console.log('joinCall - callId:', callId);
       console.log('joinCall - authenticated:', isAuthenticated);
       console.log('joinCall - nodeAuthToken:', nodeAuthToken);
+      console.log('joinCall - isHost:', isHost);
       
-      // Import the generated API functions
-      const { joinCall, joinCallUnauthenticated } = await import('../../../target/ui/caller-utils');
+      // Connect to WebSocket
+      const wsUrl = `${window.location.origin.replace('http', 'ws')}${BASE_URL}/ws`;
+      console.log('Attempting WebSocket connection to:', wsUrl);
       
-      try {
-        const result = isAuthenticated 
-          ? await joinCall({ callId, nodeAuth: nodeAuthToken })
-          : await joinCallUnauthenticated(callId, { callId, nodeAuth: null });
+      const ws = new WebSocket(wsUrl);
+      
+      ws.onopen = async () => {
+        console.log('WebSocket connected');
+        set({ wsConnection: ws, connectionStatus: 'connected' });
         
-        console.log('joinCall response:', result);
-        set({ 
-          myParticipantId: result.participantId,
-          myRole: result.role,
-        });
-        
-        // Connect to WebSocket
-        const wsUrl = `${window.location.origin.replace('http', 'ws')}${BASE_URL}/ws`;
-        console.log('Attempting WebSocket connection to:', wsUrl);
-        console.log('BASE_URL:', BASE_URL);
-        const ws = new WebSocket(wsUrl);
-        
-        ws.onopen = () => {
-          console.log('WebSocket connected successfully');
-          // Authenticate
+        if (isAuthenticated && (nodeAuthToken || isHost)) {
+          // Case 2: User has a node - use traditional auth flow
+          try {
+            const result = await joinCallApi({ callId, nodeAuth: nodeAuthToken });
+            ws.send(JSON.stringify({
+              Authenticate: {
+                participantId: result.participantId,
+                authToken: result.authToken || "",
+                displayName: displayName || null
+              }
+            }));
+            
+            set({ 
+              myParticipantId: result.participantId,
+              myRole: result.role,
+            });
+            
+            // Clear host flag after joining
+            if (isHost) {
+              sessionStorage.removeItem('isHost');
+              sessionStorage.removeItem('hostCallId');
+            }
+          } catch (error) {
+            console.error('Failed to join call with auth:', error);
+          }
+        } else {
+          // Case 1: Browser user without node - join directly via WebSocket
           ws.send(JSON.stringify({
-            Authenticate: {
-              participantId: result.participantId,
-              authToken: result.authToken || ""
+            JoinCall: {
+              callId: callId,
+              displayName: displayName || null
             }
           }));
-          set({ wsConnection: ws, connectionStatus: 'connected' });
-        };
-        
-        ws.onmessage = (event) => {
-          try {
-            const message = JSON.parse(event.data);
-            get().handleWebSocketMessage(message);
-          } catch (e) {
-            console.error('Failed to parse WebSocket message:', e);
-          }
-        };
-        
-        ws.onclose = () => {
-          set({ wsConnection: null, connectionStatus: 'disconnected' });
-        };
-        
-        ws.onerror = (error) => {
-          console.error('WebSocket error:', error);
-          console.error('WebSocket readyState:', ws.readyState);
-          console.error('WebSocket URL:', ws.url);
-          set({ connectionStatus: 'disconnected' });
-        };
-      } catch (error) {
-        console.error('Join call error:', error);
-      }
+        }
+      };
+      
+      ws.onmessage = (event) => {
+        try {
+          const message = JSON.parse(event.data);
+          get().handleWebSocketMessage(message);
+        } catch (e) {
+          console.error('Failed to parse WebSocket message:', e);
+        }
+      };
+      
+      ws.onerror = (error) => {
+        console.error('WebSocket error:', error);
+      };
+      
+      ws.onclose = () => {
+        console.log('WebSocket disconnected');
+        set({ wsConnection: null, connectionStatus: 'disconnected' });
+      };
+      
+      set({ wsConnection: ws, connectionStatus: 'connecting' });
     } catch (error) {
       console.error('Failed to join call:', error);
     }
-  },
-
-  sendChatMessage: (content: string) => {
-    const { wsConnection } = get();
-    if (wsConnection?.readyState === WebSocket.OPEN) {
-      wsConnection.send(JSON.stringify({ Chat: content }));
-    }
-  },
-
-  toggleMute: () => {
-    const { isMuted, wsConnection } = get();
-    const newMuted = !isMuted;
-    set({ isMuted: newMuted });
-    
-    if (wsConnection?.readyState === WebSocket.OPEN) {
-      wsConnection.send(JSON.stringify({ Mute: newMuted }));
-    }
-  },
-
-  promoteParticipant: (participantId: string, newRole: Role) => {
-    // TODO: Implement role update
-    console.log('Promoting participant:', participantId, 'to', newRole);
-  },
-
-  handleWebSocketMessage: (message: any) => {
-    const { participants, chatMessages } = get();
-    console.log('Received WebSocket message:', message);
-    
-    if ('Chat' in message) {
-      console.log('Chat message received:', message.Chat);
-      set({ chatMessages: [...chatMessages, message.Chat.message] });
-    } else if ('ParticipantJoined' in message) {
-      const newParticipants = new Map(participants);
-      const participant = message.ParticipantJoined.participant;
-      newParticipants.set(participant.id, participant);
-      set({ participants: newParticipants });
-    } else if ('ParticipantLeft' in message) {
-      const newParticipants = new Map(participants);
-      newParticipants.delete(message.ParticipantLeft);
-      set({ participants: newParticipants });
-    } else if ('RoleUpdated' in message) {
-      const newParticipants = new Map(participants);
-      const { participantId, newRole } = message.RoleUpdated;
-      const participant = newParticipants.get(participantId);
-      if (participant) {
-        participant.role = newRole;
-        newParticipants.set(participantId, participant);
-        set({ participants: newParticipants });
-      }
-    } else if ('ParticipantMuted' in message) {
-      const newParticipants = new Map(participants);
-      const { participantId, isMuted } = message.ParticipantMuted;
-      const participant = newParticipants.get(participantId);
-      if (participant) {
-        participant.isMuted = isMuted;
-        newParticipants.set(participantId, participant);
-        set({ participants: newParticipants });
-      }
-    } else if ('WebrtcSignal' in message) {
-      // TODO: Handle WebRTC signaling
-      console.log('WebRTC signal received:', message.WebrtcSignal);
-    } else if ('Error' in message) {
-      console.error('WebSocket error:', message.Error);
-    } else if ('CallEnded' in message) {
-      // Reset state and redirect to home
-      set({
-        currentCall: null,
-        participants: new Map(),
-        chatMessages: [],
-        myParticipantId: null,
-        myRole: null,
-        wsConnection: null,
-        connectionStatus: 'disconnected'
-      });
-      window.location.href = import.meta.env.BASE_URL || '/';
-    }
-  },
+  }
 }));
