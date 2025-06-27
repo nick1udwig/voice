@@ -1,9 +1,10 @@
-import { CallInfo, ParticipantInfo, ChatMessage, Role, joinCall as joinCallApi, joinCallUnauthenticated } from '../../../target/ui/caller-utils';
+import { CallInfo, ParticipantInfo, ChatMessage, Role } from '../../../target/ui/caller-utils';
 
 export interface BaseVoiceState {
   // Connection state
   wsConnection: WebSocket | null;
   connectionStatus: 'disconnected' | 'connecting' | 'connected';
+  isNodeConnection: boolean;
 
   // Call state
   currentCall: CallInfo | null;
@@ -21,11 +22,11 @@ export interface BaseVoiceState {
 
 export interface BaseVoiceActions {
   // Core actions
-  joinCall: (callId: string) => Promise<void>;
+  joinCall: (callId: string, authToken?: string | null) => Promise<void>;
   sendChatMessage: (content: string) => void;
   toggleMute: () => void;
   handleWebSocketMessage: (message: any) => void;
-  connectWebSocket: (url: string, authToken?: string, participantId?: string) => void;
+  connectWebSocket: (url: string) => void;
   disconnect: () => void;
 }
 
@@ -35,6 +36,7 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
   // Initial state
   wsConnection: null,
   connectionStatus: 'disconnected',
+  isNodeConnection: false,
   currentCall: null,
   participants: new Map(),
   chatMessages: [],
@@ -46,52 +48,43 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
   isMuted: true,
 
   // Actions
-  joinCall: async (callId: string) => {
+  joinCall: async (callId: string, authToken?: string | null) => {
     try {
-      const BASE_URL = '/voice:voice:sys';
-      const isAuthenticated = !!(window as any).our?.node;
-      const nodeAuthToken = sessionStorage.getItem('nodeAuthToken');
+      const BASE_URL = import.meta.env.BASE_URL;
+      if ((window as any).our) (window as any).our.process = BASE_URL?.replace("/", "");
       
+      // Use provided authToken, or fall back to sessionStorage (for backward compatibility)
+      const nodeAuthToken = authToken !== undefined ? authToken : sessionStorage.getItem('nodeAuthToken');
+
       // Connect to WebSocket first
       const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const wsUrl = `${wsProtocol}//${window.location.host}${BASE_URL}/ws`;
       console.log('Attempting WebSocket connection to:', wsUrl);
-      
+
       const ws = new WebSocket(wsUrl);
-      
-      ws.onopen = async () => {
+
+      ws.onopen = () => {
         console.log('WebSocket connected');
-        set({ wsConnection: ws, connectionStatus: 'connected' });
-        
-        if (isAuthenticated && nodeAuthToken) {
-          // Case 2: User has a node - use traditional auth flow
-          try {
-            const result = await joinCallApi({ callId, nodeAuth: nodeAuthToken });
-            ws.send(JSON.stringify({
-              Authenticate: {
-                participantId: result.participantId,
-                authToken: result.authToken || ""
-              }
-            }));
-            
-            set({ 
-              myParticipantId: result.participantId,
-              myRole: result.role,
-            });
-          } catch (error) {
-            console.error('Failed to join call with auth:', error);
+        set({
+          wsConnection: ws,
+          connectionStatus: 'connected',
+          isNodeConnection: !!nodeAuthToken
+        });
+
+        console.log(`joining with auth token ${nodeAuthToken}`);
+        // Send JoinCall message with optional auth token
+        const joinMessage = {
+          JoinCall: {
+            callId: callId,
+            authToken: nodeAuthToken,
+            displayName: null
           }
-        } else {
-          // Case 1: Browser user without node - join directly via WebSocket
-          ws.send(JSON.stringify({
-            JoinCall: {
-              callId: callId,
-              displayName: null
-            }
-          }));
-        }
+        };
+
+        console.log('Sending JoinCall message:', joinMessage);
+        ws.send(JSON.stringify(joinMessage));
       };
-      
+
       ws.onmessage = (event) => {
         try {
           const message = JSON.parse(event.data);
@@ -100,18 +93,18 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
           console.error('Failed to parse WebSocket message:', e);
         }
       };
-      
+
       ws.onerror = (error) => {
         console.error('WebSocket error:', error);
       };
-      
+
       ws.onclose = () => {
         console.log('WebSocket disconnected');
         set({ wsConnection: null, connectionStatus: 'disconnected' });
       };
-      
+
       set({ wsConnection: ws, connectionStatus: 'connecting' });
-      
+
     } catch (error) {
       console.error('Failed to join call:', error);
     }
@@ -120,7 +113,7 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
   sendChatMessage: (content: string) => {
     const ws = get().wsConnection;
     const myRole = get().myRole;
-    
+
     if (ws && ws.readyState === WebSocket.OPEN && myRole && ['Chatter', 'Speaker', 'Admin'].includes(myRole)) {
       ws.send(JSON.stringify({
         Chat: content
@@ -131,7 +124,7 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
   toggleMute: () => {
     const localStream = get().localStream;
     const isMuted = get().isMuted;
-    
+
     if (localStream) {
       localStream.getAudioTracks().forEach((track: MediaStreamTrack) => {
         track.enabled = isMuted; // If currently muted, enable (unmute)
@@ -142,14 +135,14 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
 
   handleWebSocketMessage: (message: any) => {
     console.log('WebSocket message:', message);
-    
+
     if (message.ParticipantJoined) {
       const participant = message.ParticipantJoined.participant;
       set((state: BaseVoiceState) => ({
         participants: new Map(state.participants).set(participant.id, participant)
       }));
     }
-    
+
     if (message.ParticipantLeft) {
       const { participantId } = message.ParticipantLeft;
       set((state: BaseVoiceState) => {
@@ -158,14 +151,14 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
         return { participants: newParticipants };
       });
     }
-    
+
     if (message.Chat) {
       const chatMessage = message.Chat.message;
       set((state: BaseVoiceState) => ({
         chatMessages: [...state.chatMessages, chatMessage]
       }));
     }
-    
+
     if (message.RoleUpdated) {
       const { participantId, newRole } = message.RoleUpdated;
       set((state: BaseVoiceState) => {
@@ -173,15 +166,15 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
         if (participant) {
           const newParticipants = new Map(state.participants);
           newParticipants.set(participantId, { ...participant, role: newRole });
-          
+
           // Update own role if it's the current user
           if (participantId === state.myParticipantId) {
-            return { 
+            return {
               participants: newParticipants,
               myRole: newRole
             };
           }
-          
+
           return { participants: newParticipants };
         }
         return state;
@@ -190,12 +183,17 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
 
     // Special handling for ui-call JoinSuccess message
     if (message.JoinSuccess) {
-      const { participantId, role, participants, chatHistory } = message.JoinSuccess;
+      const { participantId, role, participants, chatHistory, authToken } = message.JoinSuccess;
       const participantsMap = new Map();
       participants.forEach((p: ParticipantInfo) => {
         participantsMap.set(p.id, p);
       });
-      
+
+      // Store auth token for future WebSocket messages if needed
+      if (authToken) {
+        sessionStorage.setItem('wsAuthToken', authToken);
+      }
+
       set({
         myParticipantId: participantId,
         myRole: role,
@@ -205,24 +203,14 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
     }
   },
 
-  connectWebSocket: (url: string, authToken?: string, participantId?: string) => {
+  connectWebSocket: (url: string) => {
     const ws = new WebSocket(url);
-    
+
     ws.onopen = () => {
       console.log('WebSocket connected');
       set({ wsConnection: ws, connectionStatus: 'connected' });
-      
-      // Send authentication if we have tokens
-      if (authToken && participantId) {
-        ws.send(JSON.stringify({
-          Authenticate: {
-            participantId: participantId,
-            authToken: authToken
-          }
-        }));
-      }
     };
-    
+
     ws.onmessage = (event) => {
       try {
         const message = JSON.parse(event.data);
@@ -231,16 +219,16 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
         console.error('Failed to parse WebSocket message:', e);
       }
     };
-    
+
     ws.onerror = (error) => {
       console.error('WebSocket error:', error);
     };
-    
+
     ws.onclose = () => {
       console.log('WebSocket disconnected');
       set({ wsConnection: null, connectionStatus: 'disconnected' });
     };
-    
+
     set({ wsConnection: ws, connectionStatus: 'connecting' });
   },
 

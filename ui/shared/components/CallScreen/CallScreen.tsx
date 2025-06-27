@@ -11,7 +11,8 @@ interface CallScreenProps {
   onToggleMute: () => void;
   onSendMessage: (message: string) => void;
   nodeConnected?: boolean;
-  joinCall: (callId: string) => void;
+  joinCall: (callId: string, authToken?: string | null) => void;
+  authToken?: string | null;
 }
 
 export const CallScreen: React.FC<CallScreenProps> = ({
@@ -24,16 +25,17 @@ export const CallScreen: React.FC<CallScreenProps> = ({
   onToggleMute,
   onSendMessage,
   nodeConnected = false,
-  joinCall
+  joinCall,
+  authToken
 }) => {
   const [message, setMessage] = useState('');
 
   useEffect(() => {
     if (callId) {
       // Join the call - works for both authenticated and unauthenticated users
-      joinCall(callId);
+      joinCall(callId, authToken);
     }
-  }, [callId, joinCall]);
+  }, [callId, joinCall, authToken]);
 
   const handleSendMessage = (e: React.FormEvent) => {
     e.preventDefault();

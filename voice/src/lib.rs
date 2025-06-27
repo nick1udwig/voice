@@ -1,6 +1,6 @@
 use hyperprocess_macro::hyperprocess;
 use hyperware_process_lib::http::server::{send_ws_push, WsMessageType};
-use hyperware_process_lib::{kiprintln, LazyLoadBlob, Address, our};
+use hyperware_process_lib::{kiprintln, LazyLoadBlob, our};
 use hyperware_app_common::source;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -104,16 +104,13 @@ pub struct NodeHandshakeReq {
 #[serde(rename_all = "camelCase")]
 pub struct NodeHandshakeResp {
     pub auth_token: String,
-    pub redirect_url: String,
 }
 
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum WsClientMessage {
     #[serde(rename_all = "camelCase")]
-    Authenticate { participant_id: String, auth_token: String },
-    #[serde(rename_all = "camelCase")]
-    JoinCall { call_id: String, display_name: Option<String> },
+    JoinCall { call_id: String, auth_token: Option<String>, display_name: Option<String> },
     Chat(String),
     Mute(bool),
     WebrtcSignal(SignalData),
@@ -156,7 +153,7 @@ pub struct WsWebrtcSignal {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum WsServerMessage {
     #[serde(rename_all = "camelCase")]
-    JoinSuccess { participant_id: String, role: Role, participants: Vec<ParticipantInfo>, chat_history: Vec<ChatMessage> },
+    JoinSuccess { participant_id: String, role: Role, participants: Vec<ParticipantInfo>, chat_history: Vec<ChatMessage>, auth_token: String },
     Chat(WsChatMessage),
     ParticipantJoined(WsParticipantJoined),
     #[serde(rename_all = "camelCase")]
@@ -273,69 +270,6 @@ impl VoiceState {
         Ok(call_info)
     }
 
-    #[http(method = "POST")]
-    async fn join_call(&mut self, request: JoinCallReq) -> Result<JoinInfo, String> {
-        let call = self.calls.get_mut(&request.call_id)
-            .ok_or_else(|| "Call not found".to_string())?;
-
-        let (participant_id, display_name, connection_type) = if let Some(auth_token) = request.node_auth {
-            // Look up the node ID from the auth token
-            if let Some(node_id) = self.node_auth_tokens.get(&auth_token) {
-                (node_id.clone(), node_id.clone(), ConnectionType::Node(node_id.clone()))
-            } else {
-                // Check if this is the host joining their own call
-                // Extract host node from call ID
-                let host_node = request.call_id
-                    .split('-')
-                    .next()
-                    .unwrap_or("");
-                
-                if host_node == source().node && call.creator_id.is_none() {
-                    // This is the host joining their own call
-                    let node_id = source().node;
-                    (node_id.clone(), node_id.clone(), ConnectionType::Node(node_id))
-                } else {
-                    return Err("Invalid authentication token".to_string());
-                }
-            }
-        } else {
-            let pleb_name = generate_pleb_name(
-                &self.word_dictionary,
-                self.used_pleb_names.get_mut(&request.call_id).unwrap()
-            );
-            (pleb_name.clone(), pleb_name.clone(), ConnectionType::Browser)
-        };
-
-        // First participant becomes the creator with Admin role
-        let role = if call.creator_id.is_none() {
-            call.creator_id = Some(participant_id.clone());
-            Role::Admin
-        } else {
-            call.default_role.clone()
-        };
-
-        let participant = Participant {
-            id: participant_id.clone(),
-            display_name: display_name.clone(),
-            role,
-            connection_type,
-            is_muted: true,
-        };
-
-        call.participants.insert(participant_id.clone(), participant.clone());
-
-        // Generate auth token for WebSocket authentication
-        let auth_token = generate_id();
-
-        let join_info = JoinInfo {
-            call_id: request.call_id,
-            participant_id: participant_id.clone(),
-            role: participant.role.clone(),
-            auth_token: Some(auth_token),
-        };
-
-        Ok(join_info)
-    }
 
     #[http(method = "POST")]
     async fn get_call_info(&mut self, call_id: String) -> Result<CallState, String> {
@@ -409,19 +343,13 @@ impl VoiceState {
 
 
 
-    #[http(method = "POST", path = "/join-call-unauthenticated/{call_id}")]
-    async fn join_call_unauthenticated(&mut self, call_id: String, request: JoinCallReq) -> Result<JoinInfo, String> {
-        // For unauthenticated users, override the call_id from the request with the one from the path
-        let mut req = request;
-        req.call_id = call_id;
-        self.join_call(req).await
-    }
 
     #[http(method = "POST", path = "/start-node-handshake")]
     async fn start_node_handshake(&mut self, url: String) -> Result<String, String> {
-        // Import the generated RPC function and types
-        use caller_utils::voice::node_handshake_remote_rpc;
-        use caller_utils::NodeHandshakeReq as CallerNodeHandshakeReq;
+        // Import the generated RPC function
+        use hyperware_process_lib::{Address, Request};
+        use hyperware_app_common::send;
+        use serde_json::json;
 
         // Extract call ID from the URL
         // Expected format: "https://<host>/voice:voice:sys/call/<call-id>"
@@ -444,19 +372,20 @@ impl VoiceState {
         // Build the target address for the host node
         let target = Address::new(host_node, ("voice", "voice", "sys"));
 
-        // Create the handshake request using the caller_utils type
-        let handshake_req = CallerNodeHandshakeReq {
+        // Create the handshake request using our properly serialized type
+        let handshake_req = NodeHandshakeReq {
             call_id: call_id.clone(),
         };
 
-        // Send the node handshake request to the host using the generated RPC
-        match node_handshake_remote_rpc(&target, handshake_req).await {
-            Ok(Ok(handshake_resp)) => {
-                // Store the auth token for later use
-                self.node_auth_tokens.insert(handshake_resp.auth_token.clone(), our().node);
+        // Send the node handshake request with proper serialization
+        let body = json!({"NodeHandshake": handshake_req});
+        let body = serde_json::to_vec(&body).unwrap();
+        let request = Request::to(&target).body(body);
 
+        match send::<Result<NodeHandshakeResp, String>>(request).await {
+            Ok(Ok(handshake_resp)) => {
                 // Redirect to the URL provided by the host, including the auth token
-                let redirect_url = format!("{}?auth={}", handshake_resp.redirect_url, handshake_resp.auth_token);
+                let redirect_url = format!("{}?auth={}", url, handshake_resp.auth_token);
                 Ok(redirect_url)
             }
             Ok(Err(e)) => Err(format!("Handshake failed: {}", e)),
@@ -481,14 +410,8 @@ impl VoiceState {
         // Store the mapping
         self.node_auth_tokens.insert(auth_token.clone(), node_id.clone());
 
-        // Build redirect URL with auth token
-        // Use our node's domain for the redirect URL
-        let our_node_id = our().node;
-        let redirect_url = format!("https://{}/voice:voice:sys/call/{}", our_node_id, request.call_id);
-
         Ok(NodeHandshakeResp {
             auth_token,
-            redirect_url,
         })
     }
 
@@ -527,93 +450,62 @@ impl VoiceState {
 // Helper functions for WebSocket handling
 fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientMessage) {
     match msg {
-        WsClientMessage::Authenticate { participant_id, auth_token: _ } => {
-            // TODO: Validate auth_token
-
-            // Check if participant exists in a call
-            if let Some((call_id, role)) = find_participant_call(state, &participant_id) {
-                // Store the connection mapping
-                state.connections.insert(channel_id, participant_id.clone());
-                state.participant_channels.insert(participant_id.clone(), channel_id);
-
-                // Send current call state to the new participant
-                if let Some(call) = state.calls.get(&call_id) {
-                    let participants: Vec<ParticipantInfo> = call.participants.values()
-                        .map(|p| ParticipantInfo {
-                            id: p.id.clone(),
-                            display_name: p.display_name.clone(),
-                            role: p.role.clone(),
-                            is_muted: p.is_muted,
-                        })
-                        .collect();
-
-                    let chat_history = call.chat_history.clone();
-
-                    // Send join success to the authenticating participant
-                    send_to_channel(channel_id, WsServerMessage::JoinSuccess {
-                        participant_id: participant_id.clone(),
-                        role,
-                        participants,
-                        chat_history,
-                    });
-
-                    // Notify other participants
-                    if let Some(participant) = call.participants.get(&participant_id) {
-                        let participant_info = ParticipantInfo {
-                            id: participant.id.clone(),
-                            display_name: participant.display_name.clone(),
-                            role: participant.role.clone(),
-                            is_muted: participant.is_muted,
-                        };
-                        broadcast_to_call(state, &call_id, WsServerMessage::ParticipantJoined(
-                            WsParticipantJoined { participant: participant_info }
-                        ));
-                    }
-                }
-            } else {
-                send_error_to_channel(channel_id, "Invalid authentication");
+        WsClientMessage::JoinCall { call_id, auth_token, display_name } => {
+            // Check if call exists
+            if !state.calls.contains_key(&call_id) {
+                send_error_to_channel(channel_id, "Call not found");
+                return;
             }
-            return;
-        }
-        WsClientMessage::JoinCall { call_id, display_name } => {
-            // Case 1: Direct WebSocket join for browser users without a node
 
-            // Generate new participant ID
-            let participant_id = generate_id();
-
-            // First determine role and if we need to generate a name
-            let (role, is_first_joiner) = {
-                if let Some(call) = state.calls.get_mut(&call_id) {
-                    if call.creator_id.is_none() {
-                        call.creator_id = Some(participant_id.clone());
-                        (Role::Admin, true)
-                    } else {
-                        (call.default_role.clone(), false)
-                    }
+            // Determine participant identity based on auth token
+            let (participant_id, final_display_name, connection_type) = if let Some(token) = auth_token {
+                // Authenticated join - look up node ID from auth token
+                if let Some(node_id) = state.node_auth_tokens.get(&token) {
+                    // Use node ID as both participant ID and display name
+                    (node_id.clone(), display_name.unwrap_or_else(|| node_id.clone()), ConnectionType::Node(node_id.clone()))
                 } else {
-                    println!("ERROR voice: Call not found when trying to join: {}", call_id);
-                    return;
+                    // Check if this is the host joining their own call
+                    let host_node = call_id.split('-').next().unwrap_or("");
+                    let our_node = our().node;
+                    
+                    if host_node == our_node && state.calls.get(&call_id).map(|c| c.creator_id.is_none()).unwrap_or(false) {
+                        // This is the host joining their own call
+                        (our_node.clone(), display_name.unwrap_or_else(|| our_node.clone()), ConnectionType::Node(our_node))
+                    } else {
+                        send_error_to_channel(channel_id, "Invalid authentication token");
+                        return;
+                    }
                 }
-            };
-
-            // Generate display name if not provided
-            let display_name = if let Some(name) = display_name {
-                name
-            } else if is_first_joiner {
-                // If this is the first joiner (admin), use "Host" as the display name
-                "Host".to_string()
             } else {
-                generate_pleb_name_for_call(state, &call_id)
+                // Unauthenticated join - generate pleb ID
+                let participant_id = generate_id();
+                let final_display_name = display_name.unwrap_or_else(|| {
+                    // Check if this is the first joiner (will become host)
+                    if state.calls.get(&call_id).map(|c| c.creator_id.is_none()).unwrap_or(false) {
+                        "Host".to_string()
+                    } else {
+                        generate_pleb_name_for_call(state, &call_id)
+                    }
+                });
+                (participant_id, final_display_name, ConnectionType::Browser)
             };
 
             // Now add the participant to the call
             if let Some(call) = state.calls.get_mut(&call_id) {
+                // Determine role
+                let role = if call.creator_id.is_none() {
+                    call.creator_id = Some(participant_id.clone());
+                    Role::Admin
+                } else {
+                    call.default_role.clone()
+                };
+
                 // Create new participant
                 let participant = Participant {
                     id: participant_id.clone(),
-                    display_name: display_name.clone(),
+                    display_name: final_display_name.clone(),
                     role,
-                    connection_type: ConnectionType::Browser,
+                    connection_type,
                     is_muted: false,
                 };
 
@@ -623,6 +515,10 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
                 // Store connection mapping
                 state.connections.insert(channel_id, participant_id.clone());
                 state.participant_channels.insert(participant_id.clone(), channel_id);
+
+                // Generate auth token for future messages
+                let response_auth_token = generate_id();
+                // Note: We don't store this in node_auth_tokens since it's for WebSocket auth only
 
                 // Prepare response data
                 let participants: Vec<ParticipantInfo> = call.participants.values()
@@ -642,6 +538,7 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
                     role: participant.role.clone(),
                     participants,
                     chat_history,
+                    auth_token: response_auth_token,
                 });
 
                 // Notify other participants
@@ -651,7 +548,7 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
                     role: participant.role,
                     is_muted: participant.is_muted,
                 };
-                broadcast_to_call(state, &call_id, WsServerMessage::ParticipantJoined(
+                broadcast_to_call_except(state, &call_id, channel_id, WsServerMessage::ParticipantJoined(
                     WsParticipantJoined { participant: participant_info }
                 ));
             } else {
@@ -681,7 +578,6 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
     };
 
     match msg {
-        WsClientMessage::Authenticate { .. } => unreachable!(), // Already handled above
         WsClientMessage::JoinCall { .. } => unreachable!(), // Already handled above
         WsClientMessage::Chat(content) => {
             // Check permission
@@ -783,10 +679,6 @@ fn can_chat(role: &Role) -> bool {
     matches!(role, Role::Chatter | Role::Speaker | Role::Admin)
 }
 
-fn can_speak(role: &Role) -> bool {
-    matches!(role, Role::Speaker | Role::Admin)
-}
-
 fn handle_disconnect(state: &mut VoiceState, channel_id: u32) {
     if let Some(participant_id) = state.connections.remove(&channel_id) {
         state.participant_channels.remove(&participant_id);
@@ -854,6 +746,25 @@ fn broadcast_to_call(state: &VoiceState, call_id: &str, message: WsServerMessage
                     bytes: message_bytes.clone(),
                 };
                 send_ws_push(channel_id, WsMessageType::Text, blob);
+            }
+        }
+    }
+}
+
+fn broadcast_to_call_except(state: &VoiceState, call_id: &str, except_channel: u32, message: WsServerMessage) {
+    if let Some(call) = state.calls.get(call_id) {
+        let message_json = serde_json::to_string(&message).unwrap_or_default();
+        let message_bytes = message_json.into_bytes();
+
+        for participant_id in call.participants.keys() {
+            if let Some(&channel_id) = state.participant_channels.get(participant_id) {
+                if channel_id != except_channel {
+                    let blob = LazyLoadBlob {
+                        mime: Some("application/json".to_string()),
+                        bytes: message_bytes.clone(),
+                    };
+                    send_ws_push(channel_id, WsMessageType::Text, blob);
+                }
             }
         }
     }

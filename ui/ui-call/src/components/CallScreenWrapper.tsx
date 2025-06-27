@@ -15,15 +15,20 @@ export const CallScreenWrapper: React.FC = () => {
   // URL format: /voice:voice:sys/call/{call-id}
   const pathParts = window.location.pathname.split('/');
   const callId = pathParts[pathParts.length - 1] || window.VOICE_CALL_ID || '';
-  
-  const { 
+
+  // Extract auth token from query parameters
+  const urlParams = new URLSearchParams(window.location.search);
+  const authToken = urlParams.get('auth');
+
+  const {
     joinCall,
     participants,
     chatMessages,
     myRole,
     isMuted,
     toggleMute,
-    sendChatMessage
+    sendChatMessage,
+    isNodeConnection
   } = useVoiceStore();
 
   const handleLeaveCall = () => {
@@ -49,7 +54,9 @@ export const CallScreenWrapper: React.FC = () => {
       isMuted={isMuted}
       onToggleMute={toggleMute}
       onSendMessage={sendChatMessage}
+      nodeConnected={isNodeConnection}
       joinCall={joinCall}
+      authToken={authToken}
     />
   );
 };

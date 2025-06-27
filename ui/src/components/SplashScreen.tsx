@@ -1,10 +1,8 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { useVoiceStore } from '../store/voice';
-import { Role } from '../../../target/ui/caller-utils';
+import { startNodeHandshake, Role } from '../../../target/ui/caller-utils';
 
 export const SplashScreen: React.FC = () => {
-  const navigate = useNavigate();
   const [joinLink, setJoinLink] = useState('');
   const [defaultRole, setDefaultRole] = useState<Role>('Chatter');
   const { createCall, nodeConnected } = useVoiceStore();
@@ -14,35 +12,11 @@ export const SplashScreen: React.FC = () => {
   };
 
   const handleJoin = async () => {
-    // Check if it's a full URL with our process path
-    if (joinLink.includes('/voice:voice:sys/call/')) {
-      // This is a full URL that needs node handshake
-      const response = await fetch(`${import.meta.env.BASE_URL}/api`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ StartNodeHandshake: joinLink })
-      });
-      
-      if (response.ok) {
-        const result = await response.json();
-        if (result.Ok) {
-          // Redirect to the URL returned by the backend
-          window.location.href = result.Ok;
-        } else {
-          alert(`Failed to join: ${result.Err}`);
-        }
-      } else {
-        alert('Failed to initiate node handshake');
-      }
-    } else {
-      // Treat as regular call ID
-      const callId = joinLink.includes('/') 
-        ? joinLink.split('/').pop() || joinLink
-        : joinLink;
-      
-      if (callId) {
-        navigate(`/${callId}`);
-      }
+    try {
+      const url = await startNodeHandshake(joinLink);
+      window.location.href = url;
+    } catch (error) {
+      alert(`Failed to initiate node handshake: ${error}`);
     }
   };
 
@@ -61,8 +35,8 @@ export const SplashScreen: React.FC = () => {
 
       <div className="action-section">
         <h2>Host a Call</h2>
-        <select 
-          value={defaultRole} 
+        <select
+          value={defaultRole}
           onChange={(e) => setDefaultRole(e.target.value as Role)}
           className="role-select"
         >
@@ -84,8 +58,8 @@ export const SplashScreen: React.FC = () => {
           onChange={(e) => setJoinLink(e.target.value)}
           className="join-input"
         />
-        <button 
-          onClick={handleJoin} 
+        <button
+          onClick={handleJoin}
           disabled={!joinLink}
           className="primary-button"
         >
