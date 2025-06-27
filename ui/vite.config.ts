@@ -19,6 +19,8 @@ const BASE_URL = `/${manifest[0].process_name}:${metadata.properties.package_nam
 const PROXY_URL = (process.env.VITE_NODE_URL || 'http://127.0.0.1:8080').replace('localhost', '127.0.0.1');
 
 console.log('process.env.VITE_NODE_URL', process.env.VITE_NODE_URL, PROXY_URL);
+console.log('BASE_URL:', BASE_URL);
+console.log('WebSocket proxy path:', `${BASE_URL}/ws`);
 
 export default defineConfig({
   plugins: [react()],
@@ -39,6 +41,39 @@ export default defineConfig({
         target: PROXY_URL,
         changeOrigin: true,
         rewrite: (path) => path.replace(BASE_URL, ''),
+      },
+      // WebSocket proxy configuration
+      [`${BASE_URL}/ws`]: {
+        target: PROXY_URL,
+        changeOrigin: true,
+        ws: true,
+        rewrite: (path) => {
+          const rewritten = path.replace(BASE_URL, '');
+          console.log('WebSocket path rewrite:', path, '->', rewritten);
+          return rewritten;
+        },
+        configure: (proxy, _options) => {
+          proxy.on('error', (err, _req, _res) => {
+            console.log('WebSocket proxy error', err);
+          });
+          proxy.on('upgrade', (req) => {
+            console.log('WebSocket upgrade request:', req.url);
+          });
+          proxy.on('proxyReqWs', (proxyReq, req, socket, options, head) => {
+            console.log('WebSocket proxy request:', req.url);
+          });
+        },
+      },
+      // WebSocket proxy
+      [`${BASE_URL}/ws`]: {
+        target: PROXY_URL,
+        changeOrigin: true,
+        ws: true,
+        configure: (proxy, _options) => {
+          proxy.on('upgrade', (req) => {
+            console.log('WebSocket upgrade request:', req.url);
+          });
+        },
       },
       // This route will match all other HTTP requests to the backend
       [`^${BASE_URL}/(?!(@vite/client|src/.*|node_modules/.*|@react-refresh|$))`]: {

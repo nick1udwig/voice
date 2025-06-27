@@ -1,9 +1,9 @@
 {
-  "name": "id",
-  "description": "Prove your Hyperware id",
+  "name": "voice",
+  "description": "Voice call application with listeners",
   "image": "",
   "properties": {
-    "package_name": "id",
+    "package_name": "voice",
     "current_version": "0.1.0",
     "publisher": "sys",
     "mirrors": [],
@@ -11,10 +11,8 @@
       "0.1.0": ""
     },
     "wit_version": 1,
-    "dependencies": [
-        "sign:sys"
-    ]
+    "dependencies": []
   },
-  "external_url": "https://hyperware.ai",
+  "external_url": "",
   "animation_url": ""
 }

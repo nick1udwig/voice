@@ -5,6 +5,7 @@ panic = "abort"
 
 [workspace]
 members = [
-    "id",
+    "voice",
+    "target/caller-utils",
 ]
 resolver = "2"

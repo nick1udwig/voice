@@ -1,5 +1,5 @@
 {
-  "name": "ui-template",
+  "name": "voice-ui",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -16,6 +16,7 @@
     "@hyperware-ai/client-api": "^0.1.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
+    "react-router-dom": "^6.20.0",
     "zustand": "^4.4.7"
   },
   "devDependencies": {
