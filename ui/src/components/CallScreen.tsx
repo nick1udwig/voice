@@ -59,13 +59,30 @@ export const CallScreen: React.FC = () => {
         <div className="participants-grid">
           <h3>Participants ({participants.size})</h3>
           <div className="participant-list">
-            {Array.from(participants.values()).map((participant) => (
-              <div key={participant.id} className="participant-card">
-                <div className="participant-name">{participant.displayName}</div>
-                <div className="participant-role">{participant.role}</div>
-                {participant.isMuted && <span className="muted-indicator">🔇</span>}
-              </div>
-            ))}
+            {Array.from(participants.values()).map((participant) => {
+              const roleIcon = {
+                'Listener': '👂',
+                'Chatter': '💬',
+                'Speaker': '🎤',
+                'Admin': '👑'
+              }[participant.role] || '';
+              
+              const canSpeak = participant.role === 'Speaker' || participant.role === 'Admin';
+              
+              return (
+                <div key={participant.id} className="participant-card">
+                  <div className="participant-header">
+                    <span className="participant-role-icon">{roleIcon}</span>
+                    <span className="participant-name">{(participant as any).display_name || participant.displayName}</span>
+                  </div>
+                  {canSpeak && (
+                    <div className="participant-status">
+                      {(participant as any).is_muted || participant.isMuted ? '🔇' : '🔊'}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
 
@@ -84,7 +101,7 @@ export const CallScreen: React.FC = () => {
           <div className="chat-messages">
             {chatMessages.map((msg) => (
               <div key={msg.id} className="chat-message">
-                <span className="chat-sender">{msg.senderName}:</span>
+                <span className="chat-sender">{(msg as any).sender_name || msg.senderName}:</span>
                 <span className="chat-content">{msg.content}</span>
               </div>
             ))}

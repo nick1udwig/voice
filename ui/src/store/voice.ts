@@ -78,9 +78,12 @@ export const useVoiceStore = create<VoiceStore>((set, get) => ({
   joinCall: async (callId: string) => {
     try {
       const BASE_URL = import.meta.env.BASE_URL || '';
+      const isAuthenticated = !!(window as any).our?.node;
+      const apiPath = isAuthenticated ? '/api/join-call' : `/call/${callId}/join`;
       console.log('joinCall - BASE_URL:', BASE_URL);
       console.log('joinCall - callId:', callId);
-      const response = await fetch(`${BASE_URL}/api/join-call`, {
+      console.log('joinCall - authenticated:', isAuthenticated);
+      const response = await fetch(`${BASE_URL}${apiPath}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ JoinCall: { call_id: callId, node_auth: null } }),
@@ -165,8 +168,10 @@ export const useVoiceStore = create<VoiceStore>((set, get) => ({
 
   handleWebSocketMessage: (message: any) => {
     const { participants, chatMessages } = get();
+    console.log('Received WebSocket message:', message);
     
     if ('Chat' in message) {
+      console.log('Chat message received:', message.Chat);
       set({ chatMessages: [...chatMessages, message.Chat.message] });
     } else if ('ParticipantJoined' in message) {
       const newParticipants = new Map(participants);

@@ -156,6 +156,7 @@ struct Call {
     chat_history: Vec<ChatMessage>,
     created_at: u64,
     default_role: Role,
+    creator_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -177,7 +178,11 @@ struct Participant {
         },
         Binding::Ws {
             path: "/ws",
-            config: WsBindingConfig::default(),
+            config: WsBindingConfig::default().authenticated(false),
+        },
+        Binding::Http {
+            path: "/call/*",
+            config: HttpBindingConfig::default().authenticated(false),
         },
     ],
     save_config = SaveOptions::Never,
@@ -209,6 +214,7 @@ impl VoiceState {
                 .map_err(|e| e.to_string())?
                 .as_secs(),
             default_role: request.default_role.clone(),
+            creator_id: None, // Will be set when creator joins
         };
 
         let call_info = CallInfo {
@@ -240,10 +246,18 @@ impl VoiceState {
             (pleb_name.clone(), pleb_name.clone(), ConnectionType::Browser)
         };
 
+        // First participant becomes the creator with Admin role
+        let role = if call.creator_id.is_none() {
+            call.creator_id = Some(participant_id.clone());
+            Role::Admin
+        } else {
+            call.default_role.clone()
+        };
+
         let participant = Participant {
             id: participant_id.clone(),
             display_name: display_name.clone(),
-            role: call.default_role.clone(),
+            role,
             connection_type,
             is_muted: true,
         };
@@ -256,7 +270,7 @@ impl VoiceState {
         let join_info = JoinInfo {
             call_id: request.call_id,
             participant_id: participant_id.clone(),
-            role: call.default_role.clone(),
+            role: participant.role.clone(),
             auth_token: Some(auth_token),
         };
 
@@ -327,6 +341,35 @@ impl VoiceState {
         Ok(())
     }
 
+    #[http(method = "GET", path = "/call/{call_id}")]
+    async fn get_call_page(&mut self, call_id: String) -> Result<String, String> {
+        // Check if call exists
+        if !self.calls.contains_key(&call_id) {
+            return Err("Call not found".to_string());
+        }
+        
+        // Return a simple HTML page that redirects to the main app with the call ID
+        Ok(format!(r#"
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <meta http-equiv="refresh" content="0; url=/voice:voice:sys/{}" />
+            </head>
+            <body>
+                <p>Redirecting to call...</p>
+            </body>
+            </html>
+        "#, call_id))
+    }
+    
+    #[http(method = "POST", path = "/call/{call_id}/join")]
+    async fn join_call_unauthenticated(&mut self, call_id: String, request: JoinCallReq) -> Result<JoinInfo, String> {
+        // For unauthenticated users, override the call_id from the request with the one from the path
+        let mut req = request;
+        req.call_id = call_id;
+        self.join_call(req).await
+    }
+
     #[ws]
     fn websocket(&mut self, channel_id: u32, message_type: WsMessageType, blob: LazyLoadBlob) {
         match message_type {
@@ -355,6 +398,7 @@ impl VoiceState {
             }
         }
     }
+    
 }
 
 // Helper functions for WebSocket handling
