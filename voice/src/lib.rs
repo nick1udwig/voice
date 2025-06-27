@@ -20,11 +20,13 @@ pub enum ConnectionType {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateCallReq {
     pub default_role: Role,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CallInfo {
     pub id: String,
     pub created_at: u64,
@@ -33,12 +35,14 @@ pub struct CallInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct JoinCallReq {
     pub call_id: String,
     pub node_auth: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct JoinInfo {
     pub call_id: String,
     pub participant_id: String,
@@ -47,6 +51,7 @@ pub struct JoinInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CallState {
     pub call_info: CallInfo,
     pub participants: Vec<ParticipantInfo>,
@@ -54,6 +59,7 @@ pub struct CallState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ParticipantInfo {
     pub id: String,
     pub display_name: String,
@@ -62,6 +68,7 @@ pub struct ParticipantInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ChatMessage {
     pub id: String,
     pub sender_id: String,
@@ -71,12 +78,14 @@ pub struct ChatMessage {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LeaveCallReq {
     pub call_id: String,
     pub participant_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UpdateRoleReq {
     pub call_id: String,
     pub requester_id: String,
@@ -86,6 +95,7 @@ pub struct UpdateRoleReq {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum WsClientMessage {
+    #[serde(rename_all = "camelCase")]
     Authenticate { participant_id: String, auth_token: String },
     Chat(String),
     Mute(bool),
@@ -94,28 +104,33 @@ pub enum WsClientMessage {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WsChatMessage {
     pub message: ChatMessage,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WsParticipantJoined {
     pub participant: ParticipantInfo,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WsRoleUpdate {
     pub participant_id: String,
     pub new_role: Role,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WsParticipantMuted {
     pub participant_id: String,
     pub is_muted: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WsWebrtcSignal {
     pub sender_id: String,
     pub signal: SignalData,
@@ -134,6 +149,7 @@ pub enum WsServerMessage {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SignalData {
     pub target: String,
     pub signal_type: String,
@@ -201,7 +217,7 @@ impl VoiceState {
         ].into_iter().map(String::from).collect();
     }
 
-    #[http(method = "POST", path = "/create-call")]
+    #[http(method = "POST")]
     async fn create_call(&mut self, request: CreateCallReq) -> Result<CallInfo, String> {
         let call_id = generate_call_id(&self.word_dictionary);
         
@@ -230,7 +246,7 @@ impl VoiceState {
         Ok(call_info)
     }
 
-    #[http(method = "POST", path = "/join-call")]
+    #[http(method = "POST")]
     async fn join_call(&mut self, request: JoinCallReq) -> Result<JoinInfo, String> {
         let call = self.calls.get_mut(&request.call_id)
             .ok_or_else(|| "Call not found".to_string())?;
@@ -277,7 +293,7 @@ impl VoiceState {
         Ok(join_info)
     }
 
-    #[http(method = "GET", path = "/get-call-info/{call_id}")]
+    #[http(method = "POST")]
     async fn get_call_info(&mut self, call_id: String) -> Result<CallState, String> {
         let call = self.calls.get(&call_id)
             .ok_or_else(|| "Call not found".to_string())?;
@@ -305,7 +321,7 @@ impl VoiceState {
         Ok(call_state)
     }
 
-    #[http(method = "POST", path = "/leave-call")]
+    #[http(method = "POST")]
     async fn leave_call(&mut self, request: LeaveCallReq) -> Result<(), String> {
         let call = self.calls.get_mut(&request.call_id)
             .ok_or_else(|| "Call not found".to_string())?;
@@ -321,7 +337,7 @@ impl VoiceState {
         Ok(())
     }
 
-    #[http(method = "POST", path = "/update-role")]
+    #[http(method = "POST")]
     async fn update_role(&mut self, request: UpdateRoleReq) -> Result<(), String> {
         let call = self.calls.get_mut(&request.call_id)
             .ok_or_else(|| "Call not found".to_string())?;
@@ -341,7 +357,7 @@ impl VoiceState {
         Ok(())
     }
 
-    #[http(method = "GET", path = "/call/{call_id}")]
+    #[http(method = "POST")]
     async fn get_call_page(&mut self, call_id: String) -> Result<String, String> {
         // Check if call exists
         if !self.calls.contains_key(&call_id) {
@@ -361,13 +377,23 @@ impl VoiceState {
             </html>
         "#, call_id))
     }
+
+    #[http(method = "GET")]
+    async fn get_call_page_http(&mut self, call_id: String) -> Result<String, String> {
+        self.get_call_page(call_id).await
+    }
     
-    #[http(method = "POST", path = "/call/{call_id}/join")]
+    #[http(method = "POST")]
     async fn join_call_unauthenticated(&mut self, call_id: String, request: JoinCallReq) -> Result<JoinInfo, String> {
         // For unauthenticated users, override the call_id from the request with the one from the path
         let mut req = request;
         req.call_id = call_id;
         self.join_call(req).await
+    }
+
+    #[http(method = "POST")]
+    async fn join_call_unauthenticated_http(&mut self, call_id: String, request: JoinCallReq) -> Result<JoinInfo, String> {
+        self.join_call_unauthenticated(call_id, request).await
     }
 
     #[ws]
