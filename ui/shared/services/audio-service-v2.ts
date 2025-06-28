@@ -86,6 +86,7 @@ export class AudioServiceV2 {
   // Audio mixing (for host)
   private mixerContext: AudioContext | null = null;
   private mixerDestination: MediaStreamAudioDestinationNode | null = null;
+  private mixerNode: GainNode | null = null; // Master mixer node
   private participantGains: Map<string, GainNode> = new Map();
   private participantSources: Map<string, MediaStreamAudioSourceNode> = new Map();
   
@@ -222,7 +223,15 @@ export class AudioServiceV2 {
       latencyHint: 'interactive'
     });
     
+    // Create master mixer node that all participants connect to
+    this.mixerNode = this.mixerContext.createGain();
+    this.mixerNode.gain.value = 1.0;
+    
+    // Create destination for capturing mixed audio
     this.mixerDestination = this.mixerContext.createMediaStreamDestination();
+    
+    // Connect mixer to destination (for capture, not playback)
+    this.mixerNode.connect(this.mixerDestination);
     
     // Set up capture of mixed audio
     this.setupMixedAudioCapture();
@@ -267,7 +276,8 @@ export class AudioServiceV2 {
     };
     
     source.connect(processor);
-    processor.connect(this.mixerContext.destination);
+    // DO NOT connect processor to destination - this creates feedback!
+    // processor.connect(this.mixerContext.destination);
     
     console.log('[AudioService] Mixed audio capture setup complete');
   }
@@ -427,8 +437,8 @@ export class AudioServiceV2 {
   private mixParticipantAudio(participantId: string, packet: AudioPacket): void {
     console.log('[AudioService] Host mixing audio from:', participantId, 'seq:', packet.sequenceNumber);
     
-    if (!this.mixerContext) {
-      console.error('[AudioService] No mixer context!');
+    if (!this.mixerContext || !this.mixerNode) {
+      console.error('[AudioService] No mixer context or mixer node!');
       return;
     }
     
@@ -458,22 +468,13 @@ export class AudioServiceV2 {
     let gainNode = this.participantGains.get(participantId);
     if (!gainNode) {
       gainNode = this.mixerContext.createGain();
-      gainNode.connect(this.mixerDestination!);
+      gainNode.connect(this.mixerNode); // Connect to mixer node, not destination
       this.participantGains.set(participantId, gainNode);
       console.log('[AudioService] Created gain node for:', participantId);
     }
     
     source.connect(gainNode);
     source.start();
-    
-    // Send mixed audio to all participants
-    if (this.mixerDestination) {
-      const mixedStream = this.mixerDestination.stream;
-      // Process and send mixed audio
-      this.processMixedAudio(mixedStream);
-    } else {
-      console.error('[AudioService] No mixer destination!');
-    }
   }
   
   private processMixedAudio(stream: MediaStream): void {
