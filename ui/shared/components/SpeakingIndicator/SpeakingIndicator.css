@@ -1,0 +1,21 @@
+.speaking-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background-color: rgba(255, 255, 255, 0.1);
+  transition: all 0.2s ease;
+}
+
+.speaking-indicator.speaking {
+  background-color: rgba(76, 175, 80, 0.2);
+  box-shadow: 0 0 0 2px rgba(76, 175, 80, 0.5);
+}
+
+.audio-visualizer {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+}

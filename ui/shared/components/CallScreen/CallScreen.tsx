@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { ParticipantInfo, ChatMessage, Role } from '../../../../target/ui/caller-utils';
+import { SpeakingIndicator } from '../SpeakingIndicator/SpeakingIndicator';
 
 interface CallScreenProps {
   callId: string;
@@ -80,6 +81,9 @@ export const CallScreen: React.FC<CallScreenProps> = ({
               <li key={participant.id} className={`participant ${participant.role?.toLowerCase() || 'listener'}`}>
                 <span className="participant-name">{participant.displayName}</span>
                 <span className="participant-role">{participant.role || 'Listener'}</span>
+                {(participant.role === 'Speaker' || participant.role === 'Admin') && (
+                  <SpeakingIndicator participantId={participant.id} isSpeaking={!participant.isMuted} />
+                )}
                 {participant.isMuted && <span className="muted-indicator">🔇</span>}
               </li>
             ))}
@@ -113,9 +117,11 @@ export const CallScreen: React.FC<CallScreenProps> = ({
       </div>
       
       <div className="call-controls">
-        <button onClick={onToggleMute} className={`mute-button ${isMuted ? 'muted' : ''}`}>
-          {isMuted ? '🔇 Unmute' : '🎤 Mute'}
-        </button>
+        {(myRole === 'Speaker' || myRole === 'Admin') && (
+          <button onClick={onToggleMute} className={`mute-button ${isMuted ? 'muted' : ''}`}>
+            {isMuted ? '🔇 Unmute' : '🎤 Mute'}
+          </button>
+        )}
         {myRole && <span className="my-role">Your Role: {myRole}</span>}
         {nodeConnected && (
           <button 

@@ -113,7 +113,8 @@ pub enum WsClientMessage {
     JoinCall { call_id: String, auth_token: Option<String>, display_name: Option<String> },
     Chat(String),
     Mute(bool),
-    WebrtcSignal(SignalData),
+    #[serde(rename_all = "camelCase")]
+    AudioData { data: String, sample_rate: u32, channels: u32 },
     Heartbeat,
 }
 
@@ -145,33 +146,26 @@ pub struct WsParticipantMuted {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct WsWebrtcSignal {
-    pub sender_id: String,
-    pub signal: SignalData,
+pub struct WsAudioData {
+    pub participant_id: String,
+    pub data: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum WsServerMessage {
     #[serde(rename_all = "camelCase")]
-    JoinSuccess { participant_id: String, role: Role, participants: Vec<ParticipantInfo>, chat_history: Vec<ChatMessage>, auth_token: String },
+    JoinSuccess { participant_id: String, role: Role, participants: Vec<ParticipantInfo>, chat_history: Vec<ChatMessage>, auth_token: String, host_id: Option<String> },
     Chat(WsChatMessage),
     ParticipantJoined(WsParticipantJoined),
     #[serde(rename_all = "camelCase")]
     ParticipantLeft { participant_id: String },
     RoleUpdated(WsRoleUpdate),
     ParticipantMuted(WsParticipantMuted),
-    WebrtcSignal(WsWebrtcSignal),
+    AudioData(WsAudioData),
     Error(String),
     CallEnded,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SignalData {
-    pub target: String,
-    pub signal_type: String,
-    pub payload: String,
-}
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 struct VoiceState {
@@ -191,6 +185,7 @@ struct Call {
     created_at: u64,
     default_role: Role,
     creator_id: Option<String>,
+    host_id: Option<String>, // The participant who mixes audio
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -245,6 +240,7 @@ impl VoiceState {
                 .as_secs(),
             default_role: request.default_role.clone(),
             creator_id: None, // Will be set when creator joins
+            host_id: None, // Will be set when first participant joins
         };
 
         let call_info = CallInfo {
@@ -492,9 +488,10 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
 
             // Now add the participant to the call
             if let Some(call) = state.calls.get_mut(&call_id) {
-                // Determine role
+                // Determine role and host
                 let role = if call.creator_id.is_none() {
                     call.creator_id = Some(participant_id.clone());
+                    call.host_id = Some(participant_id.clone()); // First participant becomes host
                     Role::Admin
                 } else {
                     call.default_role.clone()
@@ -532,13 +529,14 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
 
                 let chat_history = call.chat_history.clone();
 
-                // Send join success to the joining participant
+                // Send join success with host info
                 send_to_channel(channel_id, WsServerMessage::JoinSuccess {
                     participant_id: participant_id.clone(),
                     role: participant.role.clone(),
                     participants,
                     chat_history,
                     auth_token: response_auth_token,
+                    host_id: call.host_id.clone(),
                 });
 
                 // Notify other participants
@@ -619,15 +617,42 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
                 }
             }
         }
-        WsClientMessage::WebrtcSignal(signal) => {
-            // Route WebRTC signaling to target participant
-            let target = signal.target.clone();
-            send_to_participant(state, &target, WsServerMessage::WebrtcSignal(
-                WsWebrtcSignal {
-                    sender_id: participant_id,
-                    signal
+        WsClientMessage::AudioData { data, sample_rate: _, channels: _ } => {
+            kiprintln!("Received audio data from participant: {}", participant_id);
+            
+            // Check if the participant can speak
+            if !matches!(participant_role, Role::Speaker | Role::Admin) {
+                kiprintln!("Participant {} cannot speak (role: {:?})", participant_id, participant_role);
+                send_error_to_channel(channel_id, "No audio permission");
+                return;
+            }
+            
+            if let Some(call) = state.calls.get(&call_id) {
+                // Route audio based on sender role
+                if call.host_id == Some(participant_id.clone()) {
+                    // Host is sending mixed audio - broadcast to all other participants
+                    kiprintln!("Host {} broadcasting mixed audio to all", participant_id);
+                    broadcast_to_call_except(state, &call_id, channel_id, WsServerMessage::AudioData(
+                        WsAudioData {
+                            participant_id: participant_id.clone(),
+                            data
+                        }
+                    ));
+                } else {
+                    // Regular participant - send only to host
+                    if let Some(host_id) = &call.host_id {
+                        kiprintln!("Participant {} sending audio to host {}", participant_id, host_id);
+                        send_to_participant(state, host_id, WsServerMessage::AudioData(
+                            WsAudioData {
+                                participant_id: participant_id.clone(),
+                                data
+                            }
+                        ));
+                    } else {
+                        kiprintln!("No host found for call {}", call_id);
+                    }
                 }
-            ));
+            }
         }
         WsClientMessage::Heartbeat => {
             // Keep connection alive - no action needed
