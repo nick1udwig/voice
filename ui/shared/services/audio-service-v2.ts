@@ -96,6 +96,7 @@ export class AudioServiceV2 {
   // Audio playback
   private playbackContext: AudioContext | null = null;
   private playbackSources: Map<string, AudioBufferSourceNode> = new Map();
+  private nextPlayTime: Map<string, number> = new Map(); // Track when to play next audio
   
   constructor(getStore: () => BaseVoiceStore) {
     this.getStore = getStore;
@@ -246,7 +247,7 @@ export class AudioServiceV2 {
     const source = this.mixerContext.createMediaStreamSource(mixedStream);
     
     // Use ScriptProcessor to capture mixed audio
-    const bufferSize = 2048;
+    const bufferSize = 512; // Reduced from 2048 for lower latency
     const processor = this.mixerContext.createScriptProcessor(bufferSize, 1, 1);
     
     let frameBuffer = new Float32Array(Math.floor(this.config.sampleRate * this.config.frameDuration / 1000));
@@ -484,11 +485,20 @@ export class AudioServiceV2 {
   private startPlaybackLoop(participantId: string): void {
     console.log('[AudioService] Starting playback loop for:', participantId);
     let loopCount = 0;
+    let lastPlayTime = Date.now();
     const playNext = () => {
+      const now = Date.now();
+      const actualInterval = now - lastPlayTime;
       if (loopCount % 50 === 0) { // Log every 50 frames (1 second at 20ms frames)
-        console.log('[AudioService] Playback loop running for:', participantId, 'iteration:', loopCount);
+        const jitterBuffer = this.jitterBuffers.get(participantId);
+        const bufferSize = jitterBuffer ? jitterBuffer.getBufferSize() : 0;
+        console.log('[AudioService] Playback loop:', participantId, 
+          'iteration:', loopCount, 
+          'interval:', actualInterval, 'ms',
+          'buffer size:', bufferSize);
       }
       loopCount++;
+      lastPlayTime = now;
       this.playBufferedAudio(participantId);
       setTimeout(playNext, this.config.frameDuration);
     };
@@ -516,8 +526,6 @@ export class AudioServiceV2 {
       return;
     }
     
-    console.log('[AudioService] Playing audio packet, size:', packet.data.byteLength);
-    
     try {
       // Decode and play audio
       const int16 = new Int16Array(packet.data);
@@ -528,7 +536,13 @@ export class AudioServiceV2 {
       
       // Check if we have any non-zero samples
       const hasAudio = float32.some(sample => sample !== 0);
-      console.log('[AudioService] Audio has content:', hasAudio, 'samples:', float32.length);
+      const expectedSamples = Math.floor(this.config.sampleRate * this.config.frameDuration / 1000);
+      if (packet.sequenceNumber % 10 === 0) {
+        console.log('[AudioService] Playing packet seq:', packet.sequenceNumber,
+          'samples:', float32.length, 
+          'expected:', expectedSamples,
+          'hasAudio:', hasAudio);
+      }
       
       const audioBuffer = this.playbackContext.createBuffer(
         1, 
@@ -537,11 +551,28 @@ export class AudioServiceV2 {
       );
       audioBuffer.copyToChannel(float32, 0);
       
+      // Get current audio context time
+      const currentTime = this.playbackContext.currentTime;
+      
+      // Get or initialize next play time for this participant
+      let nextTime = this.nextPlayTime.get(participantId) || currentTime;
+      if (nextTime < currentTime) {
+        nextTime = currentTime;
+      }
+      
+      // Schedule the audio to play at the exact next time
       const source = this.playbackContext.createBufferSource();
       source.buffer = audioBuffer;
       source.connect(this.playbackContext.destination);
-      source.start();
-      console.log('[AudioService] Started audio playback');
+      source.start(nextTime);
+      
+      // Update next play time (duration in seconds)
+      const duration = audioBuffer.duration;
+      this.nextPlayTime.set(participantId, nextTime + duration);
+      
+      if (packet.sequenceNumber % 10 === 0) {
+        console.log('[AudioService] Scheduled playback at:', nextTime, 'duration:', duration);
+      }
     } catch (error) {
       console.error('[AudioService] Error playing audio:', error);
     }
@@ -617,7 +648,7 @@ export class AudioServiceV2 {
     }
     
     const source = this.audioContext.createMediaStreamSource(this.mediaStream);
-    const bufferSize = 2048; // Must be power of 2
+    const bufferSize = 512; // Reduced for lower latency, must be power of 2
     const scriptProcessor = this.audioContext.createScriptProcessor(bufferSize, 1, 1);
     
     // Create analyser if not already created
