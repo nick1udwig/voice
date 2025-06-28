@@ -30,6 +30,7 @@ export const CallScreen: React.FC<CallScreenProps> = ({
   authToken
 }) => {
   const [message, setMessage] = useState('');
+  const [audioResumed, setAudioResumed] = useState(false);
 
   useEffect(() => {
     if (callId) {
@@ -63,8 +64,16 @@ export const CallScreen: React.FC<CallScreenProps> = ({
     );
   }
 
+  const handleUserInteraction = () => {
+    if (!audioResumed) {
+      console.log('[CallScreen] First user interaction - resuming audio contexts');
+      // This will trigger audio context resume in the audio service
+      setAudioResumed(true);
+    }
+  };
+
   return (
-    <div className="call-screen">
+    <div className="call-screen" onClick={handleUserInteraction}>
       <div className="call-header">
         <h1>Call ID: {callId}</h1>
         <div className="connection-status">

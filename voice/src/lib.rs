@@ -114,7 +114,7 @@ pub enum WsClientMessage {
     Chat(String),
     Mute(bool),
     #[serde(rename_all = "camelCase")]
-    AudioData { data: String, sample_rate: u32, channels: u32 },
+    AudioData { data: String, sample_rate: u32, channels: u32, sequence: Option<u32>, timestamp: Option<u64> },
     Heartbeat,
 }
 
@@ -149,6 +149,10 @@ pub struct WsParticipantMuted {
 pub struct WsAudioData {
     pub participant_id: String,
     pub data: String,
+    pub sequence: Option<u32>,
+    pub timestamp: Option<u64>,
+    pub sample_rate: Option<u32>,
+    pub channels: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -617,7 +621,7 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
                 }
             }
         }
-        WsClientMessage::AudioData { data, sample_rate: _, channels: _ } => {
+        WsClientMessage::AudioData { data, sample_rate, channels, sequence, timestamp } => {
             kiprintln!("Received audio data from participant: {}", participant_id);
             
             // Check if the participant can speak
@@ -635,7 +639,11 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
                     broadcast_to_call_except(state, &call_id, channel_id, WsServerMessage::AudioData(
                         WsAudioData {
                             participant_id: participant_id.clone(),
-                            data
+                            data,
+                            sequence,
+                            timestamp,
+                            sample_rate: Some(sample_rate),
+                            channels: Some(channels),
                         }
                     ));
                 } else {
@@ -645,7 +653,11 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
                         send_to_participant(state, host_id, WsServerMessage::AudioData(
                             WsAudioData {
                                 participant_id: participant_id.clone(),
-                                data
+                                data,
+                                sequence,
+                                timestamp,
+                                sample_rate: Some(sample_rate),
+                                channels: Some(channels),
                             }
                         ));
                     } else {

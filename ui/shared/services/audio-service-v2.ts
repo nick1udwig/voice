@@ -21,8 +21,17 @@ class JitterBuffer {
   private currentDelay: number = 0;
   private lastPlayedSequence: number = -1;
   
+  getBufferSize(): number {
+    return this.buffer.size;
+  }
+  
   push(packet: AudioPacket): void {
     this.buffer.set(packet.sequenceNumber, packet);
+    
+    // Debug: Log buffer state occasionally
+    if (this.buffer.size % 10 === 0) {
+      console.log('[JitterBuffer] Buffer size:', this.buffer.size, 'latest seq:', packet.sequenceNumber);
+    }
     
     // Clean up old packets
     const now = Date.now();
@@ -40,16 +49,24 @@ class JitterBuffer {
     if (packet) {
       this.buffer.delete(nextSequence);
       this.lastPlayedSequence = nextSequence;
+      // Log successful pop occasionally
+      if (nextSequence % 50 === 0) {
+        console.log('[JitterBuffer] Popped packet seq:', nextSequence, 'buffer size:', this.buffer.size);
+      }
       return packet;
     }
     
     // Check for packet loss - play next available packet
     const sequences = Array.from(this.buffer.keys()).sort((a, b) => a - b);
-    if (sequences.length > 0 && sequences[0] > nextSequence) {
-      const lostPackets = sequences[0] - nextSequence;
-      console.warn(`Lost ${lostPackets} audio packets`);
-      this.lastPlayedSequence = sequences[0] - 1;
-      return this.pop();
+    if (sequences.length > 0) {
+      if (sequences[0] > nextSequence) {
+        const lostPackets = sequences[0] - nextSequence;
+        console.warn(`[JitterBuffer] Lost ${lostPackets} audio packets, jumping from ${nextSequence} to ${sequences[0]}`);
+        this.lastPlayedSequence = sequences[0] - 1;
+        return this.pop();
+      }
+      // Debug: we have packets but they're all old
+      console.log('[JitterBuffer] Have packets but all are old. Expected seq:', nextSequence, 'available:', sequences.slice(0, 5));
     }
     
     return null;
@@ -104,6 +121,8 @@ export class AudioServiceV2 {
       console.log('[AudioService] User cannot speak (role:', role, ')');
     }
     
+    // Always set up playback for non-hosts (to hear mixed audio from host)
+    // Hosts need mixer instead
     if (isHost) {
       console.log('[AudioService] Setting up audio mixer (host)');
       await this.setupAudioMixer();
@@ -111,6 +130,8 @@ export class AudioServiceV2 {
       console.log('[AudioService] Setting up audio playback (participant)');
       await this.setupAudioPlayback();
     }
+    
+    console.log('[AudioService] Audio initialization complete');
   }
   
   private async setupAudioCapture(): Promise<void> {
@@ -203,28 +224,77 @@ export class AudioServiceV2 {
     
     this.mixerDestination = this.mixerContext.createMediaStreamDestination();
     
-    // Setup a worklet for mixing if needed
-    try {
-      const BASE_URL = import.meta.env.BASE_URL || '';
-      const mixerPath = `${BASE_URL}/audio-mixer.js`;
-      await this.mixerContext.audioWorklet.addModule(mixerPath);
-    } catch (error) {
-      console.error('[AudioService] Failed to load mixer worklet:', error);
-      // Continue without worklet mixer
-    }
+    // Set up capture of mixed audio
+    this.setupMixedAudioCapture();
+    
+    console.log('[AudioService] Audio mixer setup complete');
+  }
+  
+  private setupMixedAudioCapture(): void {
+    if (!this.mixerContext || !this.mixerDestination) return;
+    
+    const mixedStream = this.mixerDestination.stream;
+    const source = this.mixerContext.createMediaStreamSource(mixedStream);
+    
+    // Use ScriptProcessor to capture mixed audio
+    const bufferSize = 2048;
+    const processor = this.mixerContext.createScriptProcessor(bufferSize, 1, 1);
+    
+    let frameBuffer = new Float32Array(Math.floor(this.config.sampleRate * this.config.frameDuration / 1000));
+    let frameBufferIndex = 0;
+    let frameCount = 0;
+    
+    processor.onaudioprocess = (event) => {
+      const inputData = event.inputBuffer.getChannelData(0);
+      
+      for (let i = 0; i < inputData.length; i++) {
+        frameBuffer[frameBufferIndex++] = inputData[i];
+        
+        if (frameBufferIndex >= frameBuffer.length) {
+          // Check if we have audio
+          const hasAudio = frameBuffer.some(sample => Math.abs(sample) > 0.001);
+          if (frameCount % 50 === 0) { // Log every 50 frames
+            const maxLevel = Math.max(...frameBuffer.map(Math.abs));
+            console.log('[AudioService] Host sending mixed audio - hasAudio:', hasAudio, 'maxLevel:', maxLevel);
+          }
+          frameCount++;
+          
+          // Send complete frame
+          this.sendAudioFrame(frameBuffer.buffer.slice(0));
+          frameBufferIndex = 0;
+        }
+      }
+    };
+    
+    source.connect(processor);
+    processor.connect(this.mixerContext.destination);
+    
+    console.log('[AudioService] Mixed audio capture setup complete');
   }
   
   private async setupAudioPlayback(): Promise<void> {
+    console.log('[AudioService] Setting up audio playback context');
     this.playbackContext = new AudioContext({ 
       sampleRate: this.config.sampleRate,
       latencyHint: 'interactive'
     });
+    
+    // Audio contexts often start suspended, try to resume
+    if (this.playbackContext.state === 'suspended') {
+      console.log('[AudioService] Audio context is suspended, will resume on user interaction');
+      // We can't resume here without user interaction, it will happen in toggleMute
+    }
+    
+    console.log('[AudioService] Playback context state:', this.playbackContext.state);
   }
   
   private sendAudioFrame(audioBuffer: ArrayBuffer): void {
     const store = this.getStore();
     const ws = store?.wsConnection;
-    console.log('[AudioService] Sending audio frame, ws state:', ws?.readyState, 'buffer size:', audioBuffer.byteLength);
+    // Log every 10th frame to reduce console spam
+    if (this.sequenceNumber % 10 === 0) {
+      console.log('[AudioService] Sending audio frame, ws state:', ws?.readyState, 'seq:', this.sequenceNumber);
+    }
     
     if (ws && ws.readyState === WebSocket.OPEN) {
       // Create audio packet with sequence number
@@ -244,7 +314,7 @@ export class AudioServiceV2 {
         }
       };
       
-      console.log('[AudioService] Sending WebSocket message:', { seq: packet.seq, dataLength: message.AudioData.data.length });
+      // Already logged above if needed
       ws.send(JSON.stringify(message));
     } else {
       console.warn('[AudioService] Cannot send audio: WebSocket not ready');
@@ -284,31 +354,83 @@ export class AudioServiceV2 {
   }
   
   handleIncomingAudio(participantId: string, audioData: any): void {
+    console.log('[AudioService] handleIncomingAudio from:', participantId, 'isHost:', this.isHost);
     const buffer = this.base64ToArrayBuffer(audioData.data);
     const packet: AudioPacket = {
       sequenceNumber: audioData.sequence || 0,
       timestamp: audioData.timestamp || Date.now(),
       data: buffer
     };
+    console.log('[AudioService] Audio packet size:', buffer.byteLength, 'seq:', packet.sequenceNumber);
     
     if (this.isHost) {
       // Host mixes audio
+      console.log('[AudioService] Host mixing audio from participant:', participantId);
       this.mixParticipantAudio(participantId, packet);
     } else {
       // Regular participant plays audio through jitter buffer
+      console.log('[AudioService] Participant receiving audio for playback');
+      
+      if (!this.playbackContext) {
+        console.error('[AudioService] Playback context not initialized!');
+        return;
+      }
+      
+      // Removed test immediate playback
+      
       let jitterBuffer = this.jitterBuffers.get(participantId);
       if (!jitterBuffer) {
+        console.log('[AudioService] Creating new jitter buffer for:', participantId);
         jitterBuffer = new JitterBuffer();
         this.jitterBuffers.set(participantId, jitterBuffer);
+        // Start playback loop for this participant
+        this.startPlaybackLoop(participantId);
       }
       
       jitterBuffer.push(packet);
-      this.playBufferedAudio(participantId);
+      console.log('[AudioService] Pushed packet to jitter buffer, jitterBuffers count:', this.jitterBuffers.size, 'packets in buffer:', jitterBuffer.getBufferSize());
+    }
+  }
+  
+  private testImmediatePlayback(packet: AudioPacket): void {
+    console.log('[AudioService] TEST: Immediate playback of packet');
+    if (!this.playbackContext) return;
+    
+    try {
+      // Decode audio
+      const int16 = new Int16Array(packet.data);
+      const float32 = new Float32Array(int16.length);
+      for (let i = 0; i < int16.length; i++) {
+        float32[i] = int16[i] / 0x7FFF;
+      }
+      
+      // Check audio content
+      const hasAudio = float32.some(sample => Math.abs(sample) > 0.001);
+      const maxLevel = Math.max(...float32.map(Math.abs));
+      console.log('[AudioService] TEST: Audio analysis - hasAudio:', hasAudio, 'maxLevel:', maxLevel, 'samples:', float32.length);
+      
+      // Create and play buffer
+      const audioBuffer = this.playbackContext.createBuffer(1, float32.length, this.config.sampleRate);
+      audioBuffer.copyToChannel(float32, 0);
+      
+      const source = this.playbackContext.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(this.playbackContext.destination);
+      source.start();
+      
+      console.log('[AudioService] TEST: Started immediate playback, context state:', this.playbackContext.state);
+    } catch (error) {
+      console.error('[AudioService] TEST: Immediate playback error:', error);
     }
   }
   
   private mixParticipantAudio(participantId: string, packet: AudioPacket): void {
-    if (!this.mixerContext) return;
+    console.log('[AudioService] Host mixing audio from:', participantId, 'seq:', packet.sequenceNumber);
+    
+    if (!this.mixerContext) {
+      console.error('[AudioService] No mixer context!');
+      return;
+    }
     
     // Decode audio data
     const int16 = new Int16Array(packet.data);
@@ -316,6 +438,10 @@ export class AudioServiceV2 {
     for (let i = 0; i < int16.length; i++) {
       float32[i] = int16[i] / 0x7FFF;
     }
+    
+    // Check if we have audio
+    const hasAudio = float32.some(sample => Math.abs(sample) > 0.001);
+    console.log('[AudioService] Mixing audio has content:', hasAudio, 'samples:', float32.length);
     
     // Create audio buffer
     const audioBuffer = this.mixerContext.createBuffer(
@@ -334,6 +460,7 @@ export class AudioServiceV2 {
       gainNode = this.mixerContext.createGain();
       gainNode.connect(this.mixerDestination!);
       this.participantGains.set(participantId, gainNode);
+      console.log('[AudioService] Created gain node for:', participantId);
     }
     
     source.connect(gainNode);
@@ -344,44 +471,79 @@ export class AudioServiceV2 {
       const mixedStream = this.mixerDestination.stream;
       // Process and send mixed audio
       this.processMixedAudio(mixedStream);
+    } else {
+      console.error('[AudioService] No mixer destination!');
     }
   }
   
   private processMixedAudio(stream: MediaStream): void {
-    // This would capture the mixed audio and send it to all participants
-    // Implementation depends on how you want to capture from the destination
+    // Mixed audio is now captured automatically by setupMixedAudioCapture
+  }
+  
+  private startPlaybackLoop(participantId: string): void {
+    console.log('[AudioService] Starting playback loop for:', participantId);
+    let loopCount = 0;
+    const playNext = () => {
+      if (loopCount % 50 === 0) { // Log every 50 frames (1 second at 20ms frames)
+        console.log('[AudioService] Playback loop running for:', participantId, 'iteration:', loopCount);
+      }
+      loopCount++;
+      this.playBufferedAudio(participantId);
+      setTimeout(playNext, this.config.frameDuration);
+    };
+    playNext();
   }
   
   private playBufferedAudio(participantId: string): void {
-    if (!this.playbackContext) return;
-    
-    const jitterBuffer = this.jitterBuffers.get(participantId);
-    if (!jitterBuffer) return;
-    
-    const packet = jitterBuffer.pop();
-    if (!packet) return;
-    
-    // Decode and play audio
-    const int16 = new Int16Array(packet.data);
-    const float32 = new Float32Array(int16.length);
-    for (let i = 0; i < int16.length; i++) {
-      float32[i] = int16[i] / 0x7FFF;
+    if (!this.playbackContext) {
+      console.error('[AudioService] No playback context available');
+      return;
     }
     
-    const audioBuffer = this.playbackContext.createBuffer(
-      1, 
-      float32.length, 
-      this.config.sampleRate
-    );
-    audioBuffer.copyToChannel(float32, 0);
+    const jitterBuffer = this.jitterBuffers.get(participantId);
+    if (!jitterBuffer) {
+      console.error('[AudioService] No jitter buffer for:', participantId);
+      return;
+    }
     
-    const source = this.playbackContext.createBufferSource();
-    source.buffer = audioBuffer;
-    source.connect(this.playbackContext.destination);
-    source.start();
+    const packet = jitterBuffer.pop();
+    if (!packet) {
+      // No packet available - log occasionally to see if we're starved
+      if (Math.random() < 0.02) { // 2% chance to log
+        console.log('[AudioService] No packet in jitter buffer for:', participantId);
+      }
+      return;
+    }
     
-    // Schedule next packet
-    setTimeout(() => this.playBufferedAudio(participantId), this.config.frameDuration);
+    console.log('[AudioService] Playing audio packet, size:', packet.data.byteLength);
+    
+    try {
+      // Decode and play audio
+      const int16 = new Int16Array(packet.data);
+      const float32 = new Float32Array(int16.length);
+      for (let i = 0; i < int16.length; i++) {
+        float32[i] = int16[i] / 0x7FFF;
+      }
+      
+      // Check if we have any non-zero samples
+      const hasAudio = float32.some(sample => sample !== 0);
+      console.log('[AudioService] Audio has content:', hasAudio, 'samples:', float32.length);
+      
+      const audioBuffer = this.playbackContext.createBuffer(
+        1, 
+        float32.length, 
+        this.config.sampleRate
+      );
+      audioBuffer.copyToChannel(float32, 0);
+      
+      const source = this.playbackContext.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(this.playbackContext.destination);
+      source.start();
+      console.log('[AudioService] Started audio playback');
+    } catch (error) {
+      console.error('[AudioService] Error playing audio:', error);
+    }
   }
   
   toggleMute(muted: boolean): void {
@@ -393,6 +555,40 @@ export class AudioServiceV2 {
       });
     } else {
       console.warn('[AudioService] No media stream to toggle mute');
+    }
+    
+    // Resume audio contexts on user interaction
+    this.resumeAudioContexts();
+  }
+  
+  private async resumeAudioContexts(): Promise<void> {
+    console.log('[AudioService] Resuming audio contexts on user interaction');
+    
+    if (this.audioContext && this.audioContext.state === 'suspended') {
+      try {
+        await this.audioContext.resume();
+        console.log('[AudioService] Resumed audio context, state:', this.audioContext.state);
+      } catch (error) {
+        console.error('[AudioService] Failed to resume audio context:', error);
+      }
+    }
+    
+    if (this.playbackContext && this.playbackContext.state === 'suspended') {
+      try {
+        await this.playbackContext.resume();
+        console.log('[AudioService] Resumed playback context, state:', this.playbackContext.state);
+      } catch (error) {
+        console.error('[AudioService] Failed to resume playback context:', error);
+      }
+    }
+    
+    if (this.mixerContext && this.mixerContext.state === 'suspended') {
+      try {
+        await this.mixerContext.resume();
+        console.log('[AudioService] Resumed mixer context, state:', this.mixerContext.state);
+      } catch (error) {
+        console.error('[AudioService] Failed to resume mixer context:', error);
+      }
     }
   }
   
