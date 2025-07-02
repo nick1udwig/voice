@@ -17,7 +17,7 @@ export interface BaseVoiceState {
   // Audio state
   localStream: MediaStream | null;
   isMuted: boolean;
-  
+
   // Audio service
   audioService: AudioServiceV2 | null;
   audioLevels: Map<string, number>;
@@ -32,7 +32,7 @@ export interface BaseVoiceActions {
   handleWebSocketMessage: (message: any) => void;
   connectWebSocket: (url: string) => void;
   disconnect: () => void;
-  
+
   // Audio actions
   initializeAudio: () => void;
   cleanupAudio: () => void;
@@ -61,7 +61,7 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
     try {
       const BASE_URL = import.meta.env.BASE_URL;
       if ((window as any).our) (window as any).our.process = BASE_URL?.replace("/", "");
-      
+
       // Use provided authToken, or fall back to sessionStorage (for backward compatibility)
       const nodeAuthToken = authToken !== undefined ? authToken : sessionStorage.getItem('nodeAuthToken');
 
@@ -139,13 +139,13 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
     if (audioService) {
       const newMutedState = !isMuted;
       console.log('[VoiceStore] Changing mute state from', isMuted, 'to', newMutedState);
-      
+
       // Update store state FIRST
       set({ isMuted: newMutedState });
-      
+
       // Then update audio service
       audioService.toggleMute(newMutedState);
-      
+
       // Send mute state to server
       if (ws && ws.readyState === WebSocket.OPEN) {
         console.log('[VoiceStore] Sending mute state to server:', newMutedState);
@@ -218,7 +218,7 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
       if (authToken) {
         sessionStorage.setItem('wsAuthToken', authToken);
       }
-      
+
       set({
         myParticipantId: participantId,
         myRole: role,
@@ -226,11 +226,11 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
         chatMessages: chatHistory || [],
         hostId: hostId || null
       });
-      
+
       // Initialize audio after successful join
       get().initializeAudio();
     }
-    
+
     // Handle incoming audio data
     if (message.AudioData) {
       console.log('[VoiceStore] Received AudioData from:', message.AudioData.participantId);
@@ -241,7 +241,7 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
         console.error('[VoiceStore] No audio service available to handle incoming audio');
       }
     }
-    
+
     // Handle mute state updates
     if (message.ParticipantMuted) {
       const { participantId, isMuted } = message.ParticipantMuted;
@@ -254,6 +254,24 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
         }
         return state;
       });
+    }
+
+    // Handle call ended
+    if (message.CallEnded) {
+      console.log('[VoiceStore] Call ended by host, redirecting to home');
+      // Clean up audio first
+      get().cleanupAudio();
+
+      // Close WebSocket
+      const ws = get().wsConnection;
+      if (ws) {
+        ws.close();
+      }
+
+      // Redirect to home page
+      setTimeout(() => {
+        window.location.href = '/';
+      }, 100);
     }
   },
 
@@ -291,10 +309,10 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
     if (ws) {
       ws.close();
     }
-    
+
     // Clean up audio
     get().cleanupAudio();
-    
+
     set({
       wsConnection: null,
       connectionStatus: 'disconnected',
@@ -305,7 +323,7 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
       myRole: null
     });
   },
-  
+
   initializeAudio: () => {
     console.log('[VoiceStore] Initialize audio called');
     const store = get();
@@ -313,15 +331,15 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
       // Pass a bound getter function so audio service can access current state
       const audioService = new AudioServiceV2(() => get());
       set({ audioService });
-      
+
       // Initialize audio based on role
       const myRole = store.myRole;
       const myParticipantId = store.myParticipantId;
-      
+
       if (myRole && myParticipantId) {
         const isHost = store.hostId === myParticipantId;
         console.log('[VoiceStore] Audio init params:', { myRole, myParticipantId, isHost, hostId: store.hostId });
-        
+
         audioService.initializeAudio(myRole, myParticipantId, isHost)
           .then(() => {
             console.log('[VoiceStore] Audio initialized successfully');
@@ -338,12 +356,12 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
       }
     }
   },
-  
+
   cleanupAudio: () => {
     const audioService = get().audioService;
     if (audioService) {
       audioService.cleanup();
-      set({ 
+      set({
         audioService: null,
         localStream: null,
         audioLevels: new Map(),

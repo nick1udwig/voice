@@ -1,9 +1,9 @@
 use hyperprocess_macro::hyperprocess;
-use hyperware_process_lib::http::server::{send_ws_push, WsMessageType};
-use hyperware_process_lib::{kiprintln, LazyLoadBlob, our};
+use hyperware_process_lib::http::server::{send_ws_push, HttpServerRequest, WsMessageType};
+use hyperware_process_lib::{kiprintln, LazyLoadBlob, Request, our};
 use hyperware_app_common::source;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use rand::seq::SliceRandom;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -176,6 +176,7 @@ struct VoiceState {
     calls: HashMap<String, Call>,
     connections: HashMap<u32, String>, // channel_id -> participant_id
     participant_channels: HashMap<String, u32>, // participant_id -> channel_id
+    call_channels: HashMap<String, HashSet<u32>>, // call_id -> set of channel_ids
     word_dictionary: Vec<String>,
     used_pleb_names: HashMap<String, Vec<String>>,
     node_auth_tokens: HashMap<String, String>, // auth_token -> node_id
@@ -301,21 +302,49 @@ impl VoiceState {
 
     #[http(method = "POST")]
     async fn leave_call(&mut self, request: LeaveCallReq) -> Result<(), String> {
-        let call = self.calls.get_mut(&request.call_id)
+        let call = self.calls.get(&request.call_id)
             .ok_or_else(|| "Call not found".to_string())?;
 
-        call.participants.remove(&request.participant_id);
-        self.connections.retain(|_, pid| pid != &request.participant_id);
+        // Check if this is the host leaving
+        let is_host_leaving = call.host_id.as_ref() == Some(&request.participant_id);
+        let should_end_call = call.participants.len() <= 1 || is_host_leaving;
 
-        if call.participants.is_empty() {
-            // Unserve the UI when the call ends
+        if should_end_call {
+            // Disconnect all WebSocket connections first
+            disconnect_all_call_channels(&self, &request.call_id);
+
+            // Unserve the UI
             let call_path = format!("/call/{}", request.call_id);
             if let Err(e) = hyperware_app_common::get_server().unwrap().unserve_ui("ui-call", vec![&call_path]) {
                 kiprintln!("Failed to unserve UI for call {}: {:?}", request.call_id, e);
             }
 
+            // Clean up all state
             self.calls.remove(&request.call_id);
             self.used_pleb_names.remove(&request.call_id);
+            self.call_channels.remove(&request.call_id);
+
+            // Clean up connection mappings for all participants
+            if let Some(call) = self.calls.get(&request.call_id) {
+                for participant_id in call.participants.keys() {
+                    if let Some(channel_id) = self.participant_channels.remove(participant_id) {
+                        self.connections.remove(&channel_id);
+                    }
+                }
+            }
+        } else {
+            // Just remove the single participant
+            if let Some(call) = self.calls.get_mut(&request.call_id) {
+                call.participants.remove(&request.participant_id);
+            }
+
+            // Clean up connection mappings
+            if let Some(channel_id) = self.participant_channels.remove(&request.participant_id) {
+                self.connections.remove(&channel_id);
+                if let Some(channels) = self.call_channels.get_mut(&request.call_id) {
+                    channels.remove(&channel_id);
+                }
+            }
         }
 
         Ok(())
@@ -467,7 +496,7 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
                     // Check if this is the host joining their own call
                     let host_node = call_id.split('-').next().unwrap_or("");
                     let our_node = our().node;
-                    
+
                     if host_node == our_node && state.calls.get(&call_id).map(|c| c.creator_id.is_none()).unwrap_or(false) {
                         // This is the host joining their own call
                         (our_node.clone(), display_name.unwrap_or_else(|| our_node.clone()), ConnectionType::Node(our_node))
@@ -516,6 +545,12 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
                 // Store connection mapping
                 state.connections.insert(channel_id, participant_id.clone());
                 state.participant_channels.insert(participant_id.clone(), channel_id);
+
+                // Track this channel as part of the call
+                state.call_channels
+                    .entry(call_id.clone())
+                    .or_insert_with(HashSet::new)
+                    .insert(channel_id);
 
                 // Generate auth token for future messages
                 let response_auth_token = generate_id();
@@ -623,14 +658,14 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
         }
         WsClientMessage::AudioData { data, sample_rate, channels, sequence, timestamp } => {
             kiprintln!("Received audio data from participant: {}", participant_id);
-            
+
             // Check if the participant can speak
             if !matches!(participant_role, Role::Speaker | Role::Admin) {
                 kiprintln!("Participant {} cannot speak (role: {:?})", participant_id, participant_role);
                 send_error_to_channel(channel_id, "No audio permission");
                 return;
             }
-            
+
             if let Some(call) = state.calls.get(&call_id) {
                 // Route audio based on sender role
                 if call.host_id == Some(participant_id.clone()) {
@@ -724,38 +759,54 @@ fn handle_disconnect(state: &mut VoiceState, channel_id: u32) {
         let call_info = state.calls.iter()
             .find_map(|(cid, call)| {
                 if call.participants.contains_key(&participant_id) {
-                    Some((cid.clone(), call.participants.is_empty()))
+                    Some((cid.clone(), call.host_id.clone()))
                 } else {
                     None
                 }
             });
 
-        if let Some((call_id, _)) = call_info {
+        if let Some((call_id, host_id)) = call_info {
+            // Remove this channel from the call's channel set
+            if let Some(channels) = state.call_channels.get_mut(&call_id) {
+                channels.remove(&channel_id);
+
+                // Clean up empty channel sets
+                if channels.is_empty() {
+                    state.call_channels.remove(&call_id);
+                }
+            }
+
+            // Check if this participant is the host
+            let is_host_leaving = host_id.as_ref() == Some(&participant_id);
+
             // Remove participant from call
             if let Some(call) = state.calls.get_mut(&call_id) {
                 call.participants.remove(&participant_id);
 
-                // Check if call is now empty
+                // Check if call is now empty or if host is leaving
                 let is_empty = call.participants.is_empty();
+                let should_end_call = is_empty || is_host_leaving;
 
-                // Prepare notification message
-                let notification = WsServerMessage::ParticipantLeft { participant_id: participant_id.clone() };
+                if should_end_call {
+                    kiprintln!("Ending call {} - empty: {}, host leaving: {}", call_id, is_empty, is_host_leaving);
 
-                // Send notification to remaining participants
-                if !is_empty {
-                    broadcast_to_call(state, &call_id, notification);
-                }
+                    // Disconnect all remaining participants
+                    disconnect_all_call_channels(state, &call_id);
 
-                // Clean up empty calls
-                if is_empty {
-                    // Unserve the UI when the call ends
+                    // Unserve the UI
                     let call_path = format!("/call/{}", call_id);
                     if let Err(e) = hyperware_app_common::get_server().unwrap().unserve_ui("ui-call", vec![&call_path]) {
                         kiprintln!("Failed to unserve UI for call {}: {:?}", call_id, e);
                     }
 
+                    // Clean up call state
                     state.calls.remove(&call_id);
                     state.used_pleb_names.remove(&call_id);
+                    state.call_channels.remove(&call_id);
+                } else {
+                    // Just notify remaining participants
+                    let notification = WsServerMessage::ParticipantLeft { participant_id: participant_id.clone() };
+                    broadcast_to_call(state, &call_id, notification);
                 }
             }
         }
@@ -830,4 +881,22 @@ fn send_to_channel(channel_id: u32, message: WsServerMessage) {
 fn send_error_to_channel(channel_id: u32, error: &str) {
     let message = WsServerMessage::Error(error.to_string());
     send_to_channel(channel_id, message);
+}
+
+fn disconnect_all_call_channels(state: &VoiceState, call_id: &str) {
+    if let Some(channels) = state.call_channels.get(call_id) {
+        kiprintln!("Disconnecting {} WebSocket channels for call {}", channels.len(), call_id);
+
+        // First send CallEnded message to all participants
+        for &channel_id in channels {
+            send_to_channel(channel_id, WsServerMessage::CallEnded);
+        }
+
+        // Then send WebSocket close message to trigger client disconnection
+        for channel_id in channels {
+            let _ = Request::new()
+                .body(serde_json::to_vec(&HttpServerRequest::WebSocketClose(*channel_id)).unwrap())
+                .send();
+        }
+    }
 }
