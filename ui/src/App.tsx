@@ -11,7 +11,7 @@ if (window.our) window.our.process = BASE_URL?.replace("/", "");
 
 const PROXY_TARGET = `${(import.meta.env.VITE_NODE_URL || "http://localhost:8080")}${BASE_URL}`;
 
-const WEBSOCKET_URL = `ws://localhost:8080${BASE_URL}/ws`;
+const WEBSOCKET_URL = `${window.location.protocol.replace('http', 'ws')}//${window.location.host}${BASE_URL}/ws`;
 
 function AppContent() {
   const navigate = useNavigate();
@@ -21,7 +21,7 @@ function AppContent() {
     // Check if we have an auth token from a node handshake
     const urlParams = new URLSearchParams(window.location.search);
     const authToken = urlParams.get('auth');
-    
+
     if (authToken) {
       // Store the auth token for authenticated connection
       sessionStorage.setItem('nodeAuthToken', authToken);
