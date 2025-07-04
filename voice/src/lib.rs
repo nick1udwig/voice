@@ -1,6 +1,6 @@
 use hyperprocess_macro::hyperprocess;
-use hyperware_process_lib::http::server::{send_ws_push, HttpServerRequest, WsMessageType};
-use hyperware_process_lib::{kiprintln, LazyLoadBlob, Request, our};
+use hyperware_process_lib::http::server::{send_ws_push, WsMessageType};
+use hyperware_process_lib::{kiprintln, LazyLoadBlob, our};
 use hyperware_app_common::source;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -302,14 +302,22 @@ impl VoiceState {
 
     #[http(method = "POST")]
     async fn leave_call(&mut self, request: LeaveCallReq) -> Result<(), String> {
-        let call = self.calls.get(&request.call_id)
-            .ok_or_else(|| "Call not found".to_string())?;
+        // First check if call exists
+        if !self.calls.contains_key(&request.call_id) {
+            return Err("Call not found".to_string());
+        }
+
+        // Get host_id before any mutations
+        let host_id = self.calls.get(&request.call_id)
+            .and_then(|call| call.host_id.clone());
 
         // Check if this is the host leaving
-        let is_host_leaving = call.host_id.as_ref() == Some(&request.participant_id);
-        let should_end_call = call.participants.len() <= 1 || is_host_leaving;
+        let is_host_leaving = host_id.as_ref() == Some(&request.participant_id);
 
-        if should_end_call {
+        // If host is leaving, end call immediately
+        if is_host_leaving {
+            kiprintln!("Host {} is leaving call {}, ending call", request.participant_id, request.call_id);
+
             // Disconnect all WebSocket connections first
             disconnect_all_call_channels(&self, &request.call_id);
 
@@ -319,11 +327,6 @@ impl VoiceState {
                 kiprintln!("Failed to unserve UI for call {}: {:?}", request.call_id, e);
             }
 
-            // Clean up all state
-            self.calls.remove(&request.call_id);
-            self.used_pleb_names.remove(&request.call_id);
-            self.call_channels.remove(&request.call_id);
-
             // Clean up connection mappings for all participants
             if let Some(call) = self.calls.get(&request.call_id) {
                 for participant_id in call.participants.keys() {
@@ -332,10 +335,20 @@ impl VoiceState {
                     }
                 }
             }
+
+            // Clean up all state
+            self.calls.remove(&request.call_id);
+            self.used_pleb_names.remove(&request.call_id);
+            self.call_channels.remove(&request.call_id);
         } else {
-            // Just remove the single participant
+            // Regular participant leaving
             if let Some(call) = self.calls.get_mut(&request.call_id) {
                 call.participants.remove(&request.participant_id);
+
+                // Check if call is now empty
+                // Notify remaining participants
+                let notification = WsServerMessage::ParticipantLeft { participant_id: request.participant_id.clone() };
+                broadcast_to_call(&self, &request.call_id, notification);
             }
 
             // Clean up connection mappings
@@ -769,45 +782,42 @@ fn handle_disconnect(state: &mut VoiceState, channel_id: u32) {
             // Remove this channel from the call's channel set
             if let Some(channels) = state.call_channels.get_mut(&call_id) {
                 channels.remove(&channel_id);
-
-                // Clean up empty channel sets
-                if channels.is_empty() {
-                    state.call_channels.remove(&call_id);
-                }
             }
 
             // Check if this participant is the host
             let is_host_leaving = host_id.as_ref() == Some(&participant_id);
 
-            // Remove participant from call
-            if let Some(call) = state.calls.get_mut(&call_id) {
-                call.participants.remove(&participant_id);
-
-                // Check if call is now empty or if host is leaving
-                let is_empty = call.participants.is_empty();
-                let should_end_call = is_empty || is_host_leaving;
-
-                if should_end_call {
-                    kiprintln!("Ending call {} - empty: {}, host leaving: {}", call_id, is_empty, is_host_leaving);
-
-                    // Disconnect all remaining participants
-                    disconnect_all_call_channels(state, &call_id);
-
-                    // Unserve the UI
-                    let call_path = format!("/call/{}", call_id);
-                    if let Err(e) = hyperware_app_common::get_server().unwrap().unserve_ui("ui-call", vec![&call_path]) {
-                        kiprintln!("Failed to unserve UI for call {}: {:?}", call_id, e);
-                    }
-
-                    // Clean up call state
-                    state.calls.remove(&call_id);
-                    state.used_pleb_names.remove(&call_id);
-                    state.call_channels.remove(&call_id);
+            // Determine if we should end the call
+            let should_end_call = {
+                if let Some(call) = state.calls.get_mut(&call_id) {
+                    call.participants.remove(&participant_id);
+                    let is_empty = call.participants.is_empty();
+                    is_empty || is_host_leaving
                 } else {
-                    // Just notify remaining participants
-                    let notification = WsServerMessage::ParticipantLeft { participant_id: participant_id.clone() };
-                    broadcast_to_call(state, &call_id, notification);
+                    false
                 }
+            };
+
+            if should_end_call {
+                kiprintln!("Ending call {} - host leaving: {}", call_id, is_host_leaving);
+
+                // Disconnect all remaining participants
+                disconnect_all_call_channels(state, &call_id);
+
+                // Unserve the UI
+                let call_path = format!("/call/{}", call_id);
+                if let Err(e) = hyperware_app_common::get_server().unwrap().unserve_ui("ui-call", vec![&call_path]) {
+                    kiprintln!("Failed to unserve UI for call {}: {:?}", call_id, e);
+                }
+
+                // Clean up call state - this must happen OUTSIDE the borrow scope
+                state.calls.remove(&call_id);
+                state.used_pleb_names.remove(&call_id);
+                state.call_channels.remove(&call_id);
+            } else {
+                // Just notify remaining participants
+                let notification = WsServerMessage::ParticipantLeft { participant_id: participant_id.clone() };
+                broadcast_to_call(state, &call_id, notification);
             }
         }
     }
@@ -893,10 +903,12 @@ fn disconnect_all_call_channels(state: &VoiceState, call_id: &str) {
         }
 
         // Then send WebSocket close message to trigger client disconnection
-        for channel_id in channels {
-            let _ = Request::new()
-                .body(serde_json::to_vec(&HttpServerRequest::WebSocketClose(*channel_id)).unwrap())
-                .send();
+        for &channel_id in channels {
+            let blob = LazyLoadBlob {
+                mime: None,
+                bytes: vec![],
+            };
+            send_ws_push(channel_id, WsMessageType::Close, blob);
         }
     }
 }

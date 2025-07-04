@@ -8,7 +8,8 @@ export const CallScreenWrapper: React.FC = () => {
   const { callId } = useParams<{ callId: string }>();
   const navigate = useNavigate();
   const { 
-    joinCall, 
+    joinCall,
+    leaveCall, 
     participants,
     chatMessages,
     myRole,
@@ -18,8 +19,9 @@ export const CallScreenWrapper: React.FC = () => {
     nodeConnected
   } = useVoiceStore();
 
-  const handleLeaveCall = () => {
-    // TODO: Implement proper leave call
+  const handleLeaveCall = async () => {
+    // Call the proper leave API and disconnect WebSocket
+    await leaveCall();
     navigate('/');
   };
 

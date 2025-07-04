@@ -27,6 +27,7 @@ export interface BaseVoiceState {
 export interface BaseVoiceActions {
   // Core actions
   joinCall: (callId: string, authToken?: string | null) => Promise<void>;
+  leaveCall: () => Promise<void>;
   sendChatMessage: (content: string) => void;
   toggleMute: () => void;
   handleWebSocketMessage: (message: any) => void;
@@ -219,12 +220,21 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
         sessionStorage.setItem('wsAuthToken', authToken);
       }
 
+      // Get call ID from the JoinCall message we sent (stored in closure or from URL)
+      const callId = window.location.pathname.split('/').pop() || '';
+
       set({
         myParticipantId: participantId,
         myRole: role,
         participants: participantsMap,
         chatMessages: chatHistory || [],
-        hostId: hostId || null
+        hostId: hostId || null,
+        currentCall: {
+          id: callId,
+          createdAt: Date.now(),
+          participantCount: participants.length,
+          defaultRole: 'Speaker' // We don't have this info, using default
+        }
       });
 
       // Initialize audio after successful join
@@ -302,6 +312,32 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
     };
 
     set({ wsConnection: ws, connectionStatus: 'connecting' });
+  },
+
+  leaveCall: async () => {
+    const state = get();
+    if (!state.currentCall || !state.myParticipantId) {
+      console.error('[VoiceStore] Cannot leave call: no active call or participant ID');
+      return;
+    }
+
+    try {
+      // Import the API function
+      const { leaveCall: leaveCallApi } = await import('../../../target/ui/caller-utils');
+      
+      // Call the leave API
+      await leaveCallApi({
+        callId: state.currentCall.id,
+        participantId: state.myParticipantId
+      });
+      
+      console.log('[VoiceStore] Successfully called leave API');
+    } catch (error) {
+      console.error('[VoiceStore] Failed to call leave API:', error);
+    }
+
+    // Always disconnect websocket and clean up, regardless of API call success
+    get().disconnect();
   },
 
   disconnect: () => {
