@@ -1,4 +1,5 @@
 import { BaseVoiceStore } from '../store/base-voice';
+import { getOpusCodec, destroyOpusCodec } from './opus-codec';
 
 interface AudioConfig {
   sampleRate: number;
@@ -84,6 +85,7 @@ export class AudioServiceV2 {
   private analyserNode: AnalyserNode | null = null;
   private isHost: boolean = false;
   private sequenceNumber: number = 0;
+  private opusCodec = getOpusCodec();
 
   // Audio mixing (for host)
   private mixerContext: AudioContext | null = null;
@@ -202,13 +204,13 @@ export class AudioServiceV2 {
       this.analyserNode.connect(this.audioWorkletNode);
 
       // Handle processed audio frames
-      this.audioWorkletNode.port.onmessage = (event) => {
+      this.audioWorkletNode.port.onmessage = async (event) => {
         // Get fresh state
         const currentStore = this.getStore();
         const currentMuted = currentStore.isMuted;
         console.log('[AudioService] Received audio frame from worklet, isMuted:', currentMuted, 'type:', typeof currentMuted);
         if (event.data.type === 'audio-frame' && !currentMuted) {
-          this.sendAudioFrame(event.data.buffer);
+          await this.sendAudioFrame(event.data.buffer);
         }
       };
 
@@ -272,7 +274,9 @@ export class AudioServiceV2 {
           frameCount++;
 
           // Send complete frame
-          this.sendAudioFrame(frameBuffer.buffer.slice(0));
+          this.sendAudioFrame(frameBuffer.buffer.slice(0)).catch(err =>
+            console.error('[AudioService] Failed to send mixed audio:', err)
+          );
           frameBufferIndex = 0;
         }
       }
@@ -301,7 +305,7 @@ export class AudioServiceV2 {
     console.log('[AudioService] Playback context state:', this.playbackContext.state);
   }
 
-  private sendAudioFrame(audioBuffer: ArrayBuffer): void {
+  private async sendAudioFrame(audioBuffer: ArrayBuffer): Promise<void> {
     const store = this.getStore();
     const ws = store?.wsConnection;
     // Log every 10th frame to reduce console spam
@@ -310,42 +314,52 @@ export class AudioServiceV2 {
     }
 
     if (ws && ws.readyState === WebSocket.OPEN) {
-      // Create audio packet with sequence number
-      const packet = {
-        seq: this.sequenceNumber++,
-        ts: Date.now(),
-        data: this.encodeAudio(audioBuffer)
-      };
+      try {
+        // Create audio packet with sequence number
+        const encodedData = await this.encodeAudio(audioBuffer);
+        const packet = {
+          seq: this.sequenceNumber++,
+          ts: Date.now(),
+          data: encodedData
+        };
 
-      const message = {
-        AudioData: {
-          data: this.arrayBufferToBase64(packet.data),
-          sampleRate: this.config.sampleRate,
-          channels: this.config.channels,
-          sequence: packet.seq,
-          timestamp: packet.ts
-        }
-      };
+        const message = {
+          AudioData: {
+            data: this.arrayBufferToBase64(packet.data),
+            sampleRate: this.config.sampleRate,
+            channels: this.config.channels,
+            sequence: packet.seq,
+            timestamp: packet.ts
+          }
+        };
 
-      // Already logged above if needed
-      ws.send(JSON.stringify(message));
+        // Already logged above if needed
+        ws.send(JSON.stringify(message));
+      } catch (error) {
+        console.error('[AudioService] Failed to encode/send audio:', error);
+      }
     } else {
       console.warn('[AudioService] Cannot send audio: WebSocket not ready');
     }
   }
 
-  private encodeAudio(buffer: ArrayBuffer): ArrayBuffer {
-    // In a real implementation, you would use Opus encoding here
-    // For now, we'll just compress to 16-bit PCM
+  private async encodeAudio(buffer: ArrayBuffer): Promise<ArrayBuffer> {
+    // Use Opus encoding
     const float32 = new Float32Array(buffer);
-    const int16 = new Int16Array(float32.length);
-
-    for (let i = 0; i < float32.length; i++) {
-      const sample = Math.max(-1, Math.min(1, float32[i]));
-      int16[i] = sample * 0x7FFF;
+    try {
+      const encoded = await this.opusCodec.encode(float32);
+      console.log('[AudioService] Encoded audio:', float32.length, 'samples to', encoded.length, 'bytes');
+      return encoded.buffer;
+    } catch (error) {
+      console.error('[AudioService] Opus encoding failed:', error);
+      // Fallback to 16-bit PCM
+      const int16 = new Int16Array(float32.length);
+      for (let i = 0; i < float32.length; i++) {
+        const sample = Math.max(-1, Math.min(1, float32[i]));
+        int16[i] = sample * 0x7FFF;
+      }
+      return int16.buffer;
     }
-
-    return int16.buffer;
   }
 
   private arrayBufferToBase64(buffer: ArrayBuffer): string {
@@ -366,15 +380,36 @@ export class AudioServiceV2 {
     return bytes.buffer;
   }
 
-  handleIncomingAudio(participantId: string, audioData: any): void {
+  async handleIncomingAudio(participantId: string, audioData: any): Promise<void> {
     console.log('[AudioService] handleIncomingAudio from:', participantId, 'isHost:', this.isHost);
-    const buffer = this.base64ToArrayBuffer(audioData.data);
+    const encodedBuffer = this.base64ToArrayBuffer(audioData.data);
+
+    // Decode the Opus data
+    let decodedData: ArrayBuffer;
+    try {
+      const opusData = new Uint8Array(encodedBuffer);
+      const float32Data = await this.opusCodec.decode(opusData);
+      console.log('[AudioService] Decoded audio:', opusData.length, 'bytes to', float32Data.length, 'samples');
+
+      // Convert Float32Array back to ArrayBuffer for compatibility
+      const int16 = new Int16Array(float32Data.length);
+      for (let i = 0; i < float32Data.length; i++) {
+        const sample = Math.max(-1, Math.min(1, float32Data[i]));
+        int16[i] = sample * 0x7FFF;
+      }
+      decodedData = int16.buffer;
+    } catch (error) {
+      console.error('[AudioService] Opus decoding failed:', error);
+      // Fallback - assume it's already PCM
+      decodedData = encodedBuffer;
+    }
+
     const packet: AudioPacket = {
       sequenceNumber: audioData.sequence || 0,
       timestamp: audioData.timestamp || Date.now(),
-      data: buffer
+      data: decodedData
     };
-    console.log('[AudioService] Audio packet size:', buffer.byteLength, 'seq:', packet.sequenceNumber);
+    console.log('[AudioService] Audio packet size:', decodedData.byteLength, 'seq:', packet.sequenceNumber);
 
     if (this.isHost) {
       // Host mixes audio
@@ -675,7 +710,9 @@ export class AudioServiceV2 {
           if (frameBufferIndex >= frameBuffer.length) {
             // Send complete frame
             console.log('[AudioService] Sending audio frame via ScriptProcessor');
-            this.sendAudioFrame(frameBuffer.buffer.slice(0));
+            this.sendAudioFrame(frameBuffer.buffer.slice(0)).catch(err =>
+              console.error('[AudioService] Failed to send audio frame:', err)
+            );
             frameBufferIndex = 0;
           }
         }
@@ -711,5 +748,8 @@ export class AudioServiceV2 {
     this.jitterBuffers.clear();
     this.participantGains.clear();
     this.participantSources.clear();
+
+    // Cleanup Opus codec
+    destroyOpusCodec();
   }
 }

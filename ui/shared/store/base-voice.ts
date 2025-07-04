@@ -246,7 +246,8 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
       console.log('[VoiceStore] Received AudioData from:', message.AudioData.participantId);
       const audioService = get().audioService;
       if (audioService) {
-        audioService.handleIncomingAudio(message.AudioData.participantId, message.AudioData);
+        audioService.handleIncomingAudio(message.AudioData.participantId, message.AudioData)
+          .catch((error: Error) => console.error('[VoiceStore] Failed to handle incoming audio:', error));
       } else {
         console.error('[VoiceStore] No audio service available to handle incoming audio');
       }
