@@ -5,6 +5,11 @@ use hyperware_app_common::source;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use rand::seq::SliceRandom;
+use std::sync::{Arc, Mutex};
+use base64::{Engine as _, engine::general_purpose};
+
+mod audio;
+use audio::AudioProcessor;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Role {
@@ -180,6 +185,8 @@ struct VoiceState {
     word_dictionary: Vec<String>,
     used_pleb_names: HashMap<String, Vec<String>>,
     node_auth_tokens: HashMap<String, String>, // auth_token -> node_id
+    #[serde(skip)]
+    audio_processors: HashMap<String, Arc<Mutex<AudioProcessor>>>, // Per call audio processor
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -340,6 +347,7 @@ impl VoiceState {
             self.calls.remove(&request.call_id);
             self.used_pleb_names.remove(&request.call_id);
             self.call_channels.remove(&request.call_id);
+            self.audio_processors.remove(&request.call_id);
         } else {
             // Regular participant leaving
             if let Some(call) = self.calls.get_mut(&request.call_id) {
@@ -669,7 +677,7 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
                 }
             }
         }
-        WsClientMessage::AudioData { data, sample_rate, channels, sequence, timestamp } => {
+        WsClientMessage::AudioData { data, sample_rate: _, channels: _, sequence, timestamp } => {
             kiprintln!("Received audio data from participant: {}", participant_id);
 
             // Check if the participant can speak
@@ -679,40 +687,51 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
                 return;
             }
 
-            if let Some(call) = state.calls.get(&call_id) {
-                // Route audio based on sender role
-                if call.host_id == Some(participant_id.clone()) {
-                    // Host is sending mixed audio - broadcast to all other participants
-                    kiprintln!("Host {} broadcasting mixed audio to all", participant_id);
-                    broadcast_to_call_except(state, &call_id, channel_id, WsServerMessage::AudioData(
-                        WsAudioData {
-                            participant_id: participant_id.clone(),
-                            data,
-                            sequence,
-                            timestamp,
-                            sample_rate: Some(sample_rate),
-                            channels: Some(channels),
-                        }
-                    ));
-                } else {
-                    // Regular participant - send only to host
-                    if let Some(host_id) = &call.host_id {
-                        kiprintln!("Participant {} sending audio to host {}", participant_id, host_id);
-                        send_to_participant(state, host_id, WsServerMessage::AudioData(
-                            WsAudioData {
-                                participant_id: participant_id.clone(),
-                                data,
-                                sequence,
-                                timestamp,
-                                sample_rate: Some(sample_rate),
-                                channels: Some(channels),
-                            }
-                        ));
-                    } else {
-                        kiprintln!("No host found for call {}", call_id);
+            // Decode base64 to bytes
+            let audio_bytes = base64_to_bytes(&data);
+            
+            // Get or create audio processor for this call
+            let processor = state.audio_processors.entry(call_id.clone())
+                .or_insert_with(|| Arc::new(Mutex::new(AudioProcessor::new())))
+                .clone();
+            
+            // Process audio in the audio processor
+            if let Ok(mut proc) = processor.lock() {
+                // Ensure participant is registered
+                if !proc.has_participant(&participant_id) {
+                    if let Err(e) = proc.add_participant(participant_id.clone()) {
+                        kiprintln!("Failed to add participant to audio processor: {}", e);
+                        return;
                     }
                 }
-            }
+                
+                // Decode Opus data
+                match proc.decode_audio(&participant_id, &audio_bytes) {
+                    Ok(decoded_audio) => {
+                        // Update participant's audio buffer
+                        proc.update_participant_audio(&participant_id, decoded_audio);
+                        
+                        // Create all mix-minus outputs
+                        let mixes = proc.create_mix_minus_outputs();
+                        kiprintln!("Created {} mix-minus outputs", mixes.len());
+                        
+                        // Send personalized mix to each participant
+                        for (target_id, mix_data) in mixes {
+                            kiprintln!("Processing mix for target: {}, data size: {}", target_id, mix_data.len());
+                            if target_id == "__listener__" {
+                                // Broadcast listener mix to all non-speaking participants
+                                broadcast_to_non_speakers(state, &call_id, mix_data, sequence, timestamp);
+                            } else {
+                                // Send personalized mix to specific participant
+                                send_audio_to_participant(state, &target_id, mix_data, sequence, timestamp);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        kiprintln!("Failed to decode audio: {}", e);
+                    }
+                }
+            };
         }
         WsClientMessage::Heartbeat => {
             // Keep connection alive - no action needed
@@ -779,6 +798,13 @@ fn handle_disconnect(state: &mut VoiceState, channel_id: u32) {
             });
 
         if let Some((call_id, host_id)) = call_info {
+            // Remove participant from audio processor
+            if let Some(processor) = state.audio_processors.get(&call_id) {
+                if let Ok(mut proc) = processor.lock() {
+                    proc.remove_participant(&participant_id);
+                }
+            }
+
             // Remove this channel from the call's channel set
             if let Some(channels) = state.call_channels.get_mut(&call_id) {
                 channels.remove(&channel_id);
@@ -814,6 +840,7 @@ fn handle_disconnect(state: &mut VoiceState, channel_id: u32) {
                 state.calls.remove(&call_id);
                 state.used_pleb_names.remove(&call_id);
                 state.call_channels.remove(&call_id);
+                state.audio_processors.remove(&call_id);
             } else {
                 // Just notify remaining participants
                 let notification = WsServerMessage::ParticipantLeft { participant_id: participant_id.clone() };
@@ -910,5 +937,61 @@ fn disconnect_all_call_channels(state: &VoiceState, call_id: &str) {
             };
             send_ws_push(channel_id, WsMessageType::Close, blob);
         }
+    }
+}
+
+fn base64_to_bytes(base64_str: &str) -> Vec<u8> {
+    general_purpose::STANDARD.decode(base64_str).unwrap_or_default()
+}
+
+fn bytes_to_base64(bytes: &[u8]) -> String {
+    general_purpose::STANDARD.encode(bytes)
+}
+
+fn send_audio_to_participant(state: &VoiceState, participant_id: &str, audio_data: Vec<u8>, sequence: Option<u32>, timestamp: Option<u64>) {
+    if let Some(&channel_id) = state.participant_channels.get(participant_id) {
+        let message = WsServerMessage::AudioData(WsAudioData {
+            participant_id: participant_id.to_string(),
+            data: bytes_to_base64(&audio_data),
+            sequence,
+            timestamp,
+            sample_rate: Some(48000),
+            channels: Some(1),
+        });
+        send_to_channel(channel_id, message);
+    }
+}
+
+fn broadcast_to_non_speakers(state: &VoiceState, call_id: &str, audio_data: Vec<u8>, sequence: Option<u32>, timestamp: Option<u64>) {
+    kiprintln!("Broadcasting to non-speakers in call {}, audio data size: {}", call_id, audio_data.len());
+    
+    // Get the call and find all non-speaking participants (Listeners and Chatters)
+    if let Some(call) = state.calls.get(call_id) {
+        let mut non_speaker_count = 0;
+        for (participant_id, participant) in &call.participants {
+            kiprintln!("Checking participant {} with role {:?}", participant_id, participant.role);
+            // Send to Listeners and Chatters (they can't speak but need to hear)
+            if matches!(participant.role, Role::Listener | Role::Chatter) {
+                non_speaker_count += 1;
+                // Send audio to this participant
+                if let Some(&channel_id) = state.participant_channels.get(participant_id) {
+                    kiprintln!("Sending audio to non-speaker {} on channel {}", participant_id, channel_id);
+                    let message = WsServerMessage::AudioData(WsAudioData {
+                        participant_id: "server-mix".to_string(), // Special ID for server mix
+                        data: bytes_to_base64(&audio_data),
+                        sequence,
+                        timestamp,
+                        sample_rate: Some(48000),
+                        channels: Some(1),
+                    });
+                    send_to_channel(channel_id, message);
+                } else {
+                    kiprintln!("No channel found for non-speaker {}", participant_id);
+                }
+            }
+        }
+        kiprintln!("Found {} non-speakers in call", non_speaker_count);
+    } else {
+        kiprintln!("Call {} not found in state", call_id);
     }
 }

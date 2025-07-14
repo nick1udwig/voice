@@ -1,5 +1,7 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import { copyFileSync, mkdirSync } from 'fs'
+import { resolve } from 'path'
 
 /*
 If you are developing a UI outside of a Hyperware project,
@@ -22,8 +24,36 @@ console.log('process.env.VITE_NODE_URL', process.env.VITE_NODE_URL, PROXY_URL);
 console.log('BASE_URL:', BASE_URL);
 console.log('WebSocket proxy path:', `${BASE_URL}/ws`);
 
+// Custom plugin to copy worker files from shared directory
+const copyWorkersPlugin = () => {
+  return {
+    name: 'copy-workers',
+    buildStart() {
+      // During dev, copy to public
+      try {
+        mkdirSync(resolve('public'), { recursive: true });
+        copyFileSync(resolve('../shared/workers/audio-encoder.js'), resolve('public/audio-encoder.js'));
+        copyFileSync(resolve('../shared/workers/audio-decoder.js'), resolve('public/audio-decoder.js'));
+        console.log('Copied worker files to ui-call public directory');
+      } catch (err) {
+        console.error('Error copying worker files:', err);
+      }
+    },
+    writeBundle() {
+      // After build, copy to dist
+      try {
+        copyFileSync(resolve('../shared/workers/audio-encoder.js'), resolve('dist/audio-encoder.js'));
+        copyFileSync(resolve('../shared/workers/audio-decoder.js'), resolve('dist/audio-decoder.js'));
+        console.log('Copied worker files to ui-call dist directory');
+      } catch (err) {
+        console.error('Error copying worker files:', err);
+      }
+    }
+  };
+};
+
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), copyWorkersPlugin()],
   base: BASE_URL,
   build: {
     rollupOptions: {

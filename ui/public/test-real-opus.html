@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Real Opus Codec Test</title>
+</head>
+<body>
+    <h1>Real Opus Codec Test</h1>
+    <button id="testBtn">Test Real Opus Encoding/Decoding</button>
+    <div id="results"></div>
+
+    <script type="module">
+        import { OpusEncoderService } from '/assets/opus-encoder-service.js';
+        
+        document.getElementById('testBtn').addEventListener('click', async () => {
+            const results = document.getElementById('results');
+            results.innerHTML = '<p>Testing real Opus codec...</p>';
+
+            try {
+                // Create encoder service
+                const encoder = new OpusEncoderService();
+                
+                // Initialize with voice settings
+                await encoder.initialize({
+                    sampleRate: 48000,
+                    channels: 1,
+                    bitRate: 32000,
+                    frameSize: 20
+                });
+                
+                results.innerHTML += '<p>✅ Opus encoder initialized</p>';
+                
+                // Create test audio data (20ms of 440Hz sine wave)
+                const sampleRate = 48000;
+                const duration = 0.02; // 20ms
+                const frequency = 440;
+                const samples = sampleRate * duration;
+                const testData = new Float32Array(samples);
+                
+                for (let i = 0; i < samples; i++) {
+                    testData[i] = Math.sin(2 * Math.PI * frequency * i / sampleRate) * 0.5;
+                }
+                
+                // Test encoding
+                console.log('Original data:', testData);
+                const startEncode = performance.now();
+                const encoded = await encoder.encode(testData);
+                const encodeTime = performance.now() - startEncode;
+                
+                results.innerHTML += '<p>✅ Opus encoding successful</p>';
+                
+                // Test decoding
+                const startDecode = performance.now();
+                const decoded = await encoder.decode(encoded);
+                const decodeTime = performance.now() - startDecode;
+                
+                results.innerHTML += '<p>✅ Opus decoding successful</p>';
+                
+                // Calculate metrics
+                const originalSize = testData.length * 4; // Float32 = 4 bytes
+                const compressedSize = encoded.length;
+                const compressionRatio = originalSize / compressedSize;
+                
+                // Calculate quality metrics
+                let maxError = 0;
+                let rmsError = 0;
+                const minLength = Math.min(testData.length, decoded.length);
+                
+                for (let i = 0; i < minLength; i++) {
+                    const error = Math.abs(testData[i] - decoded[i]);
+                    maxError = Math.max(maxError, error);
+                    rmsError += error * error;
+                }
+                rmsError = Math.sqrt(rmsError / minLength);
+                
+                // Check if using real Opus or fallback
+                const isRealOpus = 'AudioEncoder' in window;
+                
+                results.innerHTML += `
+                    <h2>Test Results:</h2>
+                    <p><strong>Codec Type:</strong> ${isRealOpus ? 'Real Opus (WebCodecs API)' : 'Fallback PCM Compression'}</p>
+                    <p><strong>Original size:</strong> ${originalSize} bytes</p>
+                    <p><strong>Compressed size:</strong> ${compressedSize} bytes</p>
+                    <p><strong>Compression ratio:</strong> ${compressionRatio.toFixed(2)}x</p>
+                    <p><strong>Encode time:</strong> ${encodeTime.toFixed(2)}ms</p>
+                    <p><strong>Decode time:</strong> ${decodeTime.toFixed(2)}ms</p>
+                    <p><strong>Original samples:</strong> ${testData.length}</p>
+                    <p><strong>Decoded samples:</strong> ${decoded.length}</p>
+                    <p><strong>Max error:</strong> ${maxError.toFixed(6)}</p>
+                    <p><strong>RMS error:</strong> ${rmsError.toFixed(6)}</p>
+                    <hr>
+                    <p><strong>Browser Support:</strong></p>
+                    <p>WebCodecs API: ${'AudioEncoder' in window ? '✅ Supported' : '❌ Not supported'}</p>
+                    <p>Web Audio API: ${'AudioContext' in window ? '✅ Supported' : '❌ Not supported'}</p>
+                `;
+                
+                // Cleanup
+                encoder.destroy();
+                
+            } catch (error) {
+                results.innerHTML = `<p style="color: red;">Error: ${error.message}</p>`;
+                console.error('Test error:', error);
+            }
+        });
+    </script>
+</body>
+</html>

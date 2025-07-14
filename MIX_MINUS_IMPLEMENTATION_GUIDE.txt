@@ -1,0 +1,476 @@
+# Mix-Minus Audio Implementation Guide for Voice System
+
+## Current Architecture Overview
+
+The voice system currently implements a simplified audio mixing model:
+- **Backend (voice/src/lib.rs)**: Routes audio messages via WebSocket
+- **Frontend (ui/shared/services/audio-service-v2.ts)**: Handles audio capture, mixing (host only), and playback
+- **Audio Flow**:
+  - Regular participants send audio only to the host
+  - Host mixes all participant audio on the client side
+  - Host broadcasts mixed audio to all participants
+  - Audio is compressed using Opus codec
+
+## Target Mix-Minus Architecture
+
+Mix-minus (N-1) creates individual audio mixes where each participant hears all others except themselves. This must be implemented server-side for scalability and proper echo cancellation.
+
+**Goals:**
+- Move audio mixing from client (host) to server
+- Create personalized mixes for each participant
+- Maintain low latency and high quality
+- Support the existing Opus encoding/decoding
+
+## Implementation Steps
+
+### Phase 1: Backend Audio Processing Infrastructure
+
+#### 1.1 Add Audio Processing Dependencies to Cargo.toml
+
+```toml
+[dependencies]
+# Existing dependencies...
+opus = "0.3"  # For Opus encoding/decoding
+rubato = "0.15"  # For sample rate conversion if needed
+dasp = "0.11"  # For audio sample manipulation
+ringbuf = "0.3"  # For lock-free audio buffers
+```
+
+#### 1.2 Create Audio Processing Module (voice/src/audio.rs)
+
+```rust
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use opus::{Encoder, Decoder, Channels, Application};
+use dasp::{Sample, Frame};
+use ringbuf::{HeapRb, HeapProducer, HeapConsumer};
+
+const SAMPLE_RATE: u32 = 48000;
+const CHANNELS: u32 = 1;
+const FRAME_SIZE: usize = 960; // 20ms at 48kHz
+const OPUS_BITRATE: i32 = 32000;
+
+pub struct AudioProcessor {
+    // Opus codecs per participant
+    encoders: HashMap<String, Encoder>,
+    decoders: HashMap<String, Decoder>,
+    
+    // Ring buffers for jitter handling
+    input_buffers: HashMap<String, HeapProducer<f32>>,
+    output_buffers: HashMap<String, HeapConsumer<f32>>,
+    
+    // Mixing state
+    participant_audio: HashMap<String, Vec<f32>>,
+    master_mix: Vec<f32>,
+    
+    // Audio quality monitoring
+    packet_loss: HashMap<String, f32>,
+    jitter_ms: HashMap<String, f32>,
+}
+
+impl AudioProcessor {
+    pub fn new() -> Self {
+        Self {
+            encoders: HashMap::new(),
+            decoders: HashMap::new(),
+            input_buffers: HashMap::new(),
+            output_buffers: HashMap::new(),
+            participant_audio: HashMap::new(),
+            master_mix: vec![0.0; FRAME_SIZE],
+            packet_loss: HashMap::new(),
+            jitter_ms: HashMap::new(),
+        }
+    }
+    
+    pub fn add_participant(&mut self, participant_id: String) -> Result<(), String> {
+        // Create Opus encoder/decoder for this participant
+        let encoder = Encoder::new(SAMPLE_RATE, Channels::Mono, Application::Voip)
+            .map_err(|e| format!("Failed to create encoder: {}", e))?;
+        let decoder = Decoder::new(SAMPLE_RATE, Channels::Mono)
+            .map_err(|e| format!("Failed to create decoder: {}", e))?;
+            
+        // Create jitter buffer (100ms capacity)
+        let buffer_size = (SAMPLE_RATE as usize * 100) / 1000;
+        let (producer, consumer) = HeapRb::<f32>::new(buffer_size).split();
+        
+        self.encoders.insert(participant_id.clone(), encoder);
+        self.decoders.insert(participant_id.clone(), decoder);
+        self.input_buffers.insert(participant_id.clone(), producer);
+        self.output_buffers.insert(participant_id.clone(), consumer);
+        self.participant_audio.insert(participant_id.clone(), vec![0.0; FRAME_SIZE]);
+        
+        Ok(())
+    }
+    
+    pub fn remove_participant(&mut self, participant_id: &str) {
+        self.encoders.remove(participant_id);
+        self.decoders.remove(participant_id);
+        self.input_buffers.remove(participant_id);
+        self.output_buffers.remove(participant_id);
+        self.participant_audio.remove(participant_id);
+        self.packet_loss.remove(participant_id);
+        self.jitter_ms.remove(participant_id);
+    }
+    
+    pub fn decode_audio(&mut self, participant_id: &str, opus_data: &[u8]) -> Result<Vec<f32>, String> {
+        let decoder = self.decoders.get_mut(participant_id)
+            .ok_or_else(|| "Decoder not found for participant".to_string())?;
+            
+        let mut output = vec![0.0; FRAME_SIZE];
+        decoder.decode_float(opus_data, &mut output, false)
+            .map_err(|e| format!("Opus decode error: {}", e))?;
+            
+        Ok(output)
+    }
+    
+    pub fn create_mix_minus_outputs(&mut self) -> HashMap<String, Vec<u8>> {
+        let mut outputs = HashMap::new();
+        
+        // First, create the master mix with all participants
+        self.master_mix.fill(0.0);
+        for (_, audio) in &self.participant_audio {
+            for (i, sample) in audio.iter().enumerate() {
+                self.master_mix[i] += sample;
+            }
+        }
+        
+        // Apply master compression/limiting
+        self.apply_compression(&mut self.master_mix);
+        
+        // Create individual mixes by subtracting each participant's audio
+        for (participant_id, participant_audio) in &self.participant_audio {
+            let mut personal_mix = vec![0.0; FRAME_SIZE];
+            
+            // Mix = Master - Own Audio
+            for i in 0..FRAME_SIZE {
+                personal_mix[i] = self.master_mix[i] - participant_audio[i];
+            }
+            
+            // Apply AGC and normalization
+            self.apply_agc(&mut personal_mix);
+            
+            // Encode to Opus
+            if let Some(encoder) = self.encoders.get_mut(participant_id) {
+                let mut opus_output = vec![0u8; 4000]; // Max Opus frame size
+                match encoder.encode_float(&personal_mix, &mut opus_output) {
+                    Ok(size) => {
+                        opus_output.truncate(size);
+                        outputs.insert(participant_id.clone(), opus_output);
+                    }
+                    Err(e) => {
+                        eprintln!("Opus encode error for {}: {}", participant_id, e);
+                    }
+                }
+            }
+        }
+        
+        // Create listener mix (full master mix)
+        let mut listener_mix = self.master_mix.clone();
+        let mut opus_listener = vec![0u8; 4000];
+        
+        // Use any available encoder for the listener mix
+        if let Some((_, encoder)) = self.encoders.iter_mut().next() {
+            if let Ok(size) = encoder.encode_float(&listener_mix, &mut opus_listener) {
+                opus_listener.truncate(size);
+                outputs.insert("__listener__".to_string(), opus_listener);
+            }
+        }
+        
+        outputs
+    }
+    
+    fn apply_compression(&self, buffer: &mut [f32]) {
+        const THRESHOLD: f32 = 0.7;
+        const RATIO: f32 = 4.0;
+        
+        for sample in buffer.iter_mut() {
+            let abs_sample = sample.abs();
+            if abs_sample > THRESHOLD {
+                let over = abs_sample - THRESHOLD;
+                let compressed = THRESHOLD + (over / RATIO);
+                *sample = compressed * sample.signum();
+            }
+        }
+    }
+    
+    fn apply_agc(&self, buffer: &mut [f32]) {
+        // Simple AGC: normalize to target level
+        const TARGET_RMS: f32 = 0.3;
+        
+        let rms = (buffer.iter().map(|s| s * s).sum::<f32>() / buffer.len() as f32).sqrt();
+        if rms > 0.001 {
+            let gain = (TARGET_RMS / rms).min(3.0).max(0.5); // Limit gain range
+            for sample in buffer.iter_mut() {
+                *sample *= gain;
+            }
+        }
+    }
+}
+```
+
+#### 1.3 Integrate Audio Processing into WebSocket Handler
+
+Modify voice/src/lib.rs to integrate server-side mixing:
+
+```rust
+// Add to imports
+mod audio;
+use audio::AudioProcessor;
+use std::sync::{Arc, Mutex};
+
+// Add to VoiceState
+struct VoiceState {
+    // ... existing fields ...
+    audio_processors: HashMap<String, Arc<Mutex<AudioProcessor>>>, // Per call
+}
+
+// In handle_client_message function, modify AudioData handling:
+WsClientMessage::AudioData { data, sample_rate, channels, sequence, timestamp } => {
+    kiprintln!("Received audio data from participant: {}", participant_id);
+    
+    // Decode base64 to bytes
+    let audio_bytes = base64_to_bytes(&data);
+    
+    // Get or create audio processor for this call
+    let processor = {
+        let mut processors = state.audio_processors.entry(call_id.clone())
+            .or_insert_with(|| Arc::new(Mutex::new(AudioProcessor::new())));
+        processors.clone()
+    };
+    
+    // Process audio in the audio processor
+    if let Ok(mut proc) = processor.lock() {
+        // Ensure participant is registered
+        if !proc.has_participant(&participant_id) {
+            proc.add_participant(participant_id.clone());
+        }
+        
+        // Decode Opus data
+        match proc.decode_audio(&participant_id, &audio_bytes) {
+            Ok(decoded_audio) => {
+                // Update participant's audio buffer
+                proc.update_participant_audio(&participant_id, decoded_audio);
+                
+                // Create all mix-minus outputs
+                let mixes = proc.create_mix_minus_outputs();
+                
+                // Send personalized mix to each participant
+                for (target_id, mix_data) in mixes {
+                    if target_id == "__listener__" {
+                        // Broadcast listener mix to all listeners
+                        broadcast_to_listeners(state, &call_id, mix_data);
+                    } else {
+                        // Send personalized mix to specific participant
+                        send_audio_to_participant(state, &target_id, mix_data, sequence, timestamp);
+                    }
+                }
+            }
+            Err(e) => {
+                kiprintln!("Failed to decode audio: {}", e);
+            }
+        }
+    }
+}
+```
+
+### Phase 2: Frontend Changes
+
+#### 2.1 Remove Host-Side Mixing
+
+Update ui/shared/services/audio-service-v2.ts:
+
+```typescript
+// Remove mixer-related code and simplify to just capture and playback
+export class AudioServiceV2 {
+  // ... existing fields ...
+  // Remove: mixerContext, mixerDestination, mixerNode, participantGains, participantSources
+  
+  async initializeAudio(role: string, participantId: string, isHost: boolean): Promise<void> {
+    console.log('[AudioService] Initializing audio:', { role, participantId });
+    // Remove isHost parameter usage - all participants are treated equally
+    
+    const canSpeak = ['Speaker', 'Admin'].includes(role);
+    
+    if (canSpeak) {
+      await this.setupAudioCapture();
+    }
+    
+    // All participants set up playback (no special host handling)
+    await this.setupAudioPlayback();
+  }
+  
+  // Remove setupAudioMixer, mixParticipantAudio, setupMixedAudioCapture methods
+  
+  async handleIncomingAudio(participantId: string, audioData: any): Promise<void> {
+    // Server now sends personalized mix, so just play it
+    // No need to differentiate between host and participant
+    const encodedBuffer = this.base64ToArrayBuffer(audioData.data);
+    
+    // Decode and play through jitter buffer as before
+    let decodedData: ArrayBuffer;
+    try {
+      const opusData = new Uint8Array(encodedBuffer);
+      const float32Data = await this.opusCodec.decode(opusData);
+      // Convert to ArrayBuffer...
+      decodedData = /* converted buffer */;
+    } catch (error) {
+      console.error('[AudioService] Opus decoding failed:', error);
+      decodedData = encodedBuffer; // Fallback
+    }
+    
+    const packet: AudioPacket = {
+      sequenceNumber: audioData.sequence || 0,
+      timestamp: audioData.timestamp || Date.now(),
+      data: decodedData
+    };
+    
+    // Use single jitter buffer for server's mix
+    let jitterBuffer = this.jitterBuffers.get('server-mix');
+    if (!jitterBuffer) {
+      jitterBuffer = new JitterBuffer();
+      this.jitterBuffers.set('server-mix', jitterBuffer);
+      this.startPlaybackLoop('server-mix');
+    }
+    
+    jitterBuffer.push(packet);
+  }
+}
+```
+
+### Phase 3: Optimization and Quality Improvements
+
+#### 3.1 Add Voice Activity Detection (VAD)
+
+```rust
+// In audio.rs
+pub struct VoiceActivityDetector {
+    energy_threshold: f32,
+    hangover_frames: usize,
+    current_hangover: usize,
+}
+
+impl VoiceActivityDetector {
+    pub fn new() -> Self {
+        Self {
+            energy_threshold: 0.01, // -40 dB
+            hangover_frames: 8,     // 160ms
+            current_hangover: 0,
+        }
+    }
+    
+    pub fn is_speech(&mut self, audio: &[f32]) -> bool {
+        let energy: f32 = audio.iter().map(|s| s * s).sum::<f32>() / audio.len() as f32;
+        
+        if energy > self.energy_threshold {
+            self.current_hangover = self.hangover_frames;
+            true
+        } else if self.current_hangover > 0 {
+            self.current_hangover -= 1;
+            true
+        } else {
+            false
+        }
+    }
+}
+```
+
+#### 3.2 Implement Adaptive Jitter Buffer
+
+```rust
+pub struct AdaptiveJitterBuffer {
+    packets: BTreeMap<u32, AudioPacket>,
+    target_delay_ms: u32,
+    min_delay_ms: u32,
+    max_delay_ms: u32,
+    last_pop_time: Instant,
+    stats: JitterStats,
+}
+
+impl AdaptiveJitterBuffer {
+    pub fn push(&mut self, seq: u32, timestamp: u64, data: Vec<f32>) {
+        self.packets.insert(seq, AudioPacket { seq, timestamp, data });
+        self.update_stats();
+        self.adapt_delay();
+    }
+    
+    pub fn pop(&mut self) -> Option<Vec<f32>> {
+        let now = Instant::now();
+        let target_seq = self.calculate_target_sequence(now);
+        
+        if let Some((_, packet)) = self.packets.remove(&target_seq) {
+            self.last_pop_time = now;
+            Some(packet.data)
+        } else {
+            // Generate comfort noise for missing packet
+            Some(self.generate_comfort_noise())
+        }
+    }
+    
+    fn adapt_delay(&mut self) {
+        // Adjust delay based on network conditions
+        if self.stats.loss_rate > 0.05 {
+            self.target_delay_ms = (self.target_delay_ms + 10).min(self.max_delay_ms);
+        } else if self.stats.loss_rate < 0.01 {
+            self.target_delay_ms = (self.target_delay_ms - 5).max(self.min_delay_ms);
+        }
+    }
+}
+```
+
+### Phase 4: Deployment Considerations
+
+#### 4.1 Performance Monitoring
+
+Add metrics collection to track:
+- Audio processing latency per participant
+- CPU usage for mixing operations
+- Packet loss and jitter statistics
+- Opus encoding/decoding performance
+
+#### 4.2 Scalability
+
+For large calls:
+1. Implement selective forwarding for participants who are speaking
+2. Use voice activity detection to reduce processing
+3. Consider hardware acceleration for Opus encoding
+4. Implement cascaded mixing for very large calls
+
+#### 4.3 Network Optimization
+
+1. Add DSCP marking for audio packets
+2. Implement congestion control based on RTCP feedback
+3. Use FEC (Forward Error Correction) in Opus for lossy networks
+
+## Migration Strategy
+
+1. **Phase 1**: Implement backend audio processing without removing frontend mixing
+2. **Phase 2**: Add feature flag to toggle between client and server mixing
+3. **Phase 3**: Test with small groups, monitor performance
+4. **Phase 4**: Gradually roll out to larger calls
+5. **Phase 5**: Remove client-side mixing code once stable
+
+## Testing Recommendations
+
+1. **Unit Tests**: Test audio processing functions with known inputs
+2. **Integration Tests**: Test full audio pipeline with multiple participants
+3. **Load Tests**: Simulate 10, 50, 100+ participants
+4. **Network Tests**: Test with packet loss, jitter, and varying bandwidth
+5. **Quality Tests**: Measure MOS (Mean Opinion Score) with real users
+
+## Monitoring and Debugging
+
+Add logging for:
+- Audio packet flow (receive, decode, mix, encode, send)
+- Mixing matrix state (who hears whom)
+- Performance metrics (processing time per frame)
+- Quality metrics (packet loss, jitter, audio levels)
+
+## Security Considerations
+
+1. Validate all audio packet headers
+2. Limit audio packet size to prevent DoS
+3. Rate limit audio packets per participant
+4. Encrypt audio data in transit (use SRTP if possible)
+5. Implement audio watermarking for abuse detection
+
+This implementation provides a production-ready mix-minus audio system that moves mixing to the server while maintaining compatibility with the existing Opus-based infrastructure.

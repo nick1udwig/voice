@@ -83,16 +83,10 @@ export class AudioServiceV2 {
   private mediaStream: MediaStream | null = null;
   private audioWorkletNode: AudioWorkletNode | null = null;
   private analyserNode: AnalyserNode | null = null;
-  private isHost: boolean = false;
   private sequenceNumber: number = 0;
   private opusCodec = getOpusCodec();
 
-  // Audio mixing (for host)
-  private mixerContext: AudioContext | null = null;
-  private mixerDestination: MediaStreamAudioDestinationNode | null = null;
-  private mixerNode: GainNode | null = null; // Master mixer node
-  private participantGains: Map<string, GainNode> = new Map();
-  private participantSources: Map<string, MediaStreamAudioSourceNode> = new Map();
+  // Remove host-side mixing - server handles mix-minus now
 
   // Jitter buffers for incoming audio
   private jitterBuffers: Map<string, JitterBuffer> = new Map();
@@ -116,27 +110,32 @@ export class AudioServiceV2 {
   }
 
   async initializeAudio(role: string, participantId: string, isHost: boolean): Promise<void> {
-    console.log('[AudioService] Initializing audio:', { role, participantId, isHost });
-    this.isHost = isHost;
+    console.log('[AudioService] Initializing audio:', { role, participantId });
+    // Server handles mix-minus now, so all participants are treated equally
+    
+    // Wait for opus codec to be ready
+    try {
+      console.log('[AudioService] Waiting for Opus codec to initialize...');
+      await this.opusCodec.waitForReady();
+      console.log('[AudioService] Opus codec ready');
+    } catch (error) {
+      console.error('[AudioService] Failed to initialize Opus codec:', error);
+      throw error;
+    }
+    
     const canSpeak = ['Speaker', 'Admin'].includes(role);
-
+    
     if (canSpeak) {
       console.log('[AudioService] User can speak, setting up audio capture');
       await this.setupAudioCapture();
     } else {
       console.log('[AudioService] User cannot speak (role:', role, ')');
     }
-
-    // Always set up playback for non-hosts (to hear mixed audio from host)
-    // Hosts need mixer instead
-    if (isHost) {
-      console.log('[AudioService] Setting up audio mixer (host)');
-      await this.setupAudioMixer();
-    } else {
-      console.log('[AudioService] Setting up audio playback (participant)');
-      await this.setupAudioPlayback();
-    }
-
+    
+    // All participants set up playback (no special host handling)
+    console.log('[AudioService] Setting up audio playback');
+    await this.setupAudioPlayback();
+    
     console.log('[AudioService] Audio initialization complete');
   }
 
@@ -222,72 +221,6 @@ export class AudioServiceV2 {
     }
   }
 
-  private async setupAudioMixer(): Promise<void> {
-    this.mixerContext = new AudioContext({
-      sampleRate: this.config.sampleRate,
-      latencyHint: 'interactive'
-    });
-
-    // Create master mixer node that all participants connect to
-    this.mixerNode = this.mixerContext.createGain();
-    this.mixerNode.gain.value = 1.0;
-
-    // Create destination for capturing mixed audio
-    this.mixerDestination = this.mixerContext.createMediaStreamDestination();
-
-    // Connect mixer to destination (for capture, not playback)
-    this.mixerNode.connect(this.mixerDestination);
-
-    // Set up capture of mixed audio
-    this.setupMixedAudioCapture();
-
-    console.log('[AudioService] Audio mixer setup complete');
-  }
-
-  private setupMixedAudioCapture(): void {
-    if (!this.mixerContext || !this.mixerDestination) return;
-
-    const mixedStream = this.mixerDestination.stream;
-    const source = this.mixerContext.createMediaStreamSource(mixedStream);
-
-    // Use ScriptProcessor to capture mixed audio
-    const bufferSize = 512; // Reduced from 2048 for lower latency
-    const processor = this.mixerContext.createScriptProcessor(bufferSize, 1, 1);
-
-    let frameBuffer = new Float32Array(Math.floor(this.config.sampleRate * this.config.frameDuration / 1000));
-    let frameBufferIndex = 0;
-    let frameCount = 0;
-
-    processor.onaudioprocess = (event) => {
-      const inputData = event.inputBuffer.getChannelData(0);
-
-      for (let i = 0; i < inputData.length; i++) {
-        frameBuffer[frameBufferIndex++] = inputData[i];
-
-        if (frameBufferIndex >= frameBuffer.length) {
-          // Check if we have audio
-          const hasAudio = frameBuffer.some(sample => Math.abs(sample) > 0.001);
-          if (frameCount % 50 === 0) { // Log every 50 frames
-            const maxLevel = Math.max(...frameBuffer.map(Math.abs));
-            console.log('[AudioService] Host sending mixed audio - hasAudio:', hasAudio, 'maxLevel:', maxLevel);
-          }
-          frameCount++;
-
-          // Send complete frame
-          this.sendAudioFrame(frameBuffer.buffer.slice(0)).catch(err =>
-            console.error('[AudioService] Failed to send mixed audio:', err)
-          );
-          frameBufferIndex = 0;
-        }
-      }
-    };
-
-    source.connect(processor);
-    // DO NOT connect processor to destination - this creates feedback!
-    // processor.connect(this.mixerContext.destination);
-
-    console.log('[AudioService] Mixed audio capture setup complete');
-  }
 
   private async setupAudioPlayback(): Promise<void> {
     console.log('[AudioService] Setting up audio playback context');
@@ -347,6 +280,11 @@ export class AudioServiceV2 {
     // Use Opus encoding
     const float32 = new Float32Array(buffer);
     try {
+      // Double-check codec is ready
+      if (!this.opusCodec) {
+        throw new Error('Opus codec not initialized');
+      }
+      
       const encoded = await this.opusCodec.encode(float32);
       console.log('[AudioService] Encoded audio:', float32.length, 'samples to', encoded.length, 'bytes');
       return encoded.buffer;
@@ -358,6 +296,7 @@ export class AudioServiceV2 {
         const sample = Math.max(-1, Math.min(1, float32[i]));
         int16[i] = sample * 0x7FFF;
       }
+      console.log('[AudioService] Using PCM fallback encoding');
       return int16.buffer;
     }
   }
@@ -381,7 +320,8 @@ export class AudioServiceV2 {
   }
 
   async handleIncomingAudio(participantId: string, audioData: any): Promise<void> {
-    console.log('[AudioService] handleIncomingAudio from:', participantId, 'isHost:', this.isHost);
+    // Server now sends personalized mix-minus audio, so just play it
+    console.log('[AudioService] Receiving mix-minus audio from server');
     const encodedBuffer = this.base64ToArrayBuffer(audioData.data);
 
     // Decode the Opus data
@@ -409,33 +349,23 @@ export class AudioServiceV2 {
       timestamp: audioData.timestamp || Date.now(),
       data: decodedData
     };
-    console.log('[AudioService] Audio packet size:', decodedData.byteLength, 'seq:', packet.sequenceNumber);
-
-    if (this.isHost) {
-      // Host mixes audio
-      console.log('[AudioService] Host mixing audio from participant:', participantId);
-      this.mixParticipantAudio(participantId, packet);
-    } else {
-      // Regular participant plays audio through jitter buffer
-      console.log('[AudioService] Participant receiving audio for playback');
-
-      if (!this.playbackContext) {
-        console.error('[AudioService] Playback context not initialized!');
-        return;
-      }
-
-      let jitterBuffer = this.jitterBuffers.get(participantId);
-      if (!jitterBuffer) {
-        console.log('[AudioService] Creating new jitter buffer for:', participantId);
-        jitterBuffer = new JitterBuffer();
-        this.jitterBuffers.set(participantId, jitterBuffer);
-        // Start playback loop for this participant
-        this.startPlaybackLoop(participantId);
-      }
-
-      jitterBuffer.push(packet);
-      console.log('[AudioService] Pushed packet to jitter buffer, jitterBuffers count:', this.jitterBuffers.size, 'packets in buffer:', jitterBuffer.getBufferSize());
+    
+    if (!this.playbackContext) {
+      console.error('[AudioService] Playback context not initialized!');
+      return;
     }
+
+    // Use single jitter buffer for server's mix-minus audio
+    let jitterBuffer = this.jitterBuffers.get('server-mix');
+    if (!jitterBuffer) {
+      console.log('[AudioService] Creating jitter buffer for server mix');
+      jitterBuffer = new JitterBuffer();
+      this.jitterBuffers.set('server-mix', jitterBuffer);
+      this.startPlaybackLoop('server-mix');
+    }
+
+    jitterBuffer.push(packet);
+    console.log('[AudioService] Pushed packet to jitter buffer, buffer size:', jitterBuffer.getBufferSize());
   }
 
   private testImmediatePlayback(packet: AudioPacket): void {
@@ -470,52 +400,6 @@ export class AudioServiceV2 {
     }
   }
 
-  private mixParticipantAudio(participantId: string, packet: AudioPacket): void {
-    console.log('[AudioService] Host mixing audio from:', participantId, 'seq:', packet.sequenceNumber);
-
-    if (!this.mixerContext || !this.mixerNode) {
-      console.error('[AudioService] No mixer context or mixer node!');
-      return;
-    }
-
-    // Decode audio data
-    const int16 = new Int16Array(packet.data);
-    const float32 = new Float32Array(int16.length);
-    for (let i = 0; i < int16.length; i++) {
-      float32[i] = int16[i] / 0x7FFF;
-    }
-
-    // Check if we have audio
-    const hasAudio = float32.some(sample => Math.abs(sample) > 0.001);
-    console.log('[AudioService] Mixing audio has content:', hasAudio, 'samples:', float32.length);
-
-    // Create audio buffer
-    const audioBuffer = this.mixerContext.createBuffer(
-      1,
-      float32.length,
-      this.config.sampleRate
-    );
-    audioBuffer.copyToChannel(float32, 0);
-
-    // Play through gain node for mixing
-    const source = this.mixerContext.createBufferSource();
-    source.buffer = audioBuffer;
-
-    let gainNode = this.participantGains.get(participantId);
-    if (!gainNode) {
-      gainNode = this.mixerContext.createGain();
-      gainNode.connect(this.mixerNode); // Connect to mixer node, not destination
-      this.participantGains.set(participantId, gainNode);
-      console.log('[AudioService] Created gain node for:', participantId);
-    }
-
-    source.connect(gainNode);
-    source.start();
-  }
-
-  private processMixedAudio(stream: MediaStream): void {
-    // Mixed audio is now captured automatically by setupMixedAudioCapture
-  }
 
   private startPlaybackLoop(participantId: string): void {
     console.log('[AudioService] Starting playback loop for:', participantId);
@@ -650,14 +534,6 @@ export class AudioServiceV2 {
       }
     }
 
-    if (this.mixerContext && this.mixerContext.state === 'suspended') {
-      try {
-        await this.mixerContext.resume();
-        console.log('[AudioService] Resumed mixer context, state:', this.mixerContext.state);
-      } catch (error) {
-        console.error('[AudioService] Failed to resume mixer context:', error);
-      }
-    }
   }
 
   getAudioLevel(): number {
@@ -737,17 +613,12 @@ export class AudioServiceV2 {
     if (this.audioContext) {
       this.audioContext.close();
     }
-    if (this.mixerContext) {
-      this.mixerContext.close();
-    }
     if (this.playbackContext) {
       this.playbackContext.close();
     }
 
     // Clear buffers
     this.jitterBuffers.clear();
-    this.participantGains.clear();
-    this.participantSources.clear();
 
     // Cleanup Opus codec
     destroyOpusCodec();
