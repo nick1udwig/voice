@@ -1,5 +1,5 @@
 import { BaseVoiceStore } from '../store/base-voice';
-import { getOpusCodec, destroyOpusCodec } from './opus-codec';
+import { OpusStreamEncoder } from './opus-stream-encoder';
 
 interface AudioConfig {
   sampleRate: number;
@@ -84,7 +84,7 @@ export class AudioServiceV2 {
   private audioWorkletNode: AudioWorkletNode | null = null;
   private analyserNode: AnalyserNode | null = null;
   private sequenceNumber: number = 0;
-  private opusCodec = getOpusCodec();
+  private opusEncoder: OpusStreamEncoder | null = null;
 
   // Remove host-side mixing - server handles mix-minus now
 
@@ -113,16 +113,6 @@ export class AudioServiceV2 {
     console.log('[AudioService] Initializing audio:', { role, participantId });
     // Server handles mix-minus now, so all participants are treated equally
     
-    // Wait for opus codec to be ready
-    try {
-      console.log('[AudioService] Waiting for Opus codec to initialize...');
-      await this.opusCodec.waitForReady();
-      console.log('[AudioService] Opus codec ready');
-    } catch (error) {
-      console.error('[AudioService] Failed to initialize Opus codec:', error);
-      throw error;
-    }
-    
     const canSpeak = ['Speaker', 'Admin'].includes(role);
     
     if (canSpeak) {
@@ -135,6 +125,21 @@ export class AudioServiceV2 {
     // All participants set up playback (no special host handling)
     console.log('[AudioService] Setting up audio playback');
     await this.setupAudioPlayback();
+    
+    // Initialize opus encoder after audio setup
+    try {
+      console.log('[AudioService] Waiting for Opus encoder to initialize...');
+      this.opusEncoder = new OpusStreamEncoder({
+        sampleRate: this.config.sampleRate,
+        channels: this.config.channels
+      });
+      await this.opusEncoder.initialize();
+      console.log('[AudioService] Opus codec ready');
+    } catch (error) {
+      console.error('[AudioService] Failed to initialize Opus codec:', error);
+      // Don't throw - continue without opus
+      console.warn('[AudioService] Continuing without Opus encoding');
+    }
     
     console.log('[AudioService] Audio initialization complete');
   }
@@ -207,7 +212,10 @@ export class AudioServiceV2 {
         // Get fresh state
         const currentStore = this.getStore();
         const currentMuted = currentStore.isMuted;
-        console.log('[AudioService] Received audio frame from worklet, isMuted:', currentMuted, 'type:', typeof currentMuted);
+        if (this.sequenceNumber % 10 === 0 && !currentMuted) {
+          console.log('[AudioService] Received audio frame from worklet, isMuted:', currentMuted, 'type:', typeof currentMuted);
+          console.log('[AudioService] Event data:', event.data.type, 'buffer size:', event.data.buffer?.byteLength);
+        }
         if (event.data.type === 'audio-frame' && !currentMuted) {
           await this.sendAudioFrame(event.data.buffer);
         }
@@ -243,7 +251,8 @@ export class AudioServiceV2 {
     const ws = store?.wsConnection;
     // Log every 10th frame to reduce console spam
     if (this.sequenceNumber % 10 === 0) {
-      console.log('[AudioService] Sending audio frame, ws state:', ws?.readyState, 'seq:', this.sequenceNumber);
+      console.log('[AudioService] Sending audio frame, ws state:', ws?.readyState, 'seq:', this.sequenceNumber, 'ws:', ws);
+      console.log('[AudioService] Store exists:', !!store, 'isMuted:', store?.isMuted);
     }
 
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -272,32 +281,41 @@ export class AudioServiceV2 {
         console.error('[AudioService] Failed to encode/send audio:', error);
       }
     } else {
-      console.warn('[AudioService] Cannot send audio: WebSocket not ready');
+      if (this.sequenceNumber % 10 === 0) {
+        console.warn('[AudioService] Cannot send audio: WebSocket not ready, ws:', ws, 'readyState:', ws?.readyState);
+      }
     }
   }
 
   private async encodeAudio(buffer: ArrayBuffer): Promise<ArrayBuffer> {
     // Use Opus encoding
     const float32 = new Float32Array(buffer);
+    
+    // Check if we have actual audio data
+    const hasAudio = float32.some(sample => Math.abs(sample) > 0.001);
+    const maxLevel = Math.max(...float32.map(Math.abs));
+    if (this.sequenceNumber % 10 === 0) {
+      console.log('[AudioService] Audio level check - hasAudio:', hasAudio, 'maxLevel:', maxLevel, 'samples:', float32.length);
+    }
+    
+    // Double-check encoder is ready
+    if (!this.opusEncoder) {
+      throw new Error('Opus encoder not initialized');
+    }
+    
     try {
-      // Double-check codec is ready
-      if (!this.opusCodec) {
-        throw new Error('Opus codec not initialized');
-      }
-      
-      const encoded = await this.opusCodec.encode(float32);
+      const encoded = await this.opusEncoder.encode(float32);
       console.log('[AudioService] Encoded audio:', float32.length, 'samples to', encoded.length, 'bytes');
+      // Re-initialize encoder for next use since 'done' terminates the worker
+      await this.opusEncoder.reinitialize();
       return encoded.buffer;
     } catch (error) {
-      console.error('[AudioService] Opus encoding failed:', error);
-      // Fallback to 16-bit PCM
-      const int16 = new Int16Array(float32.length);
-      for (let i = 0; i < float32.length; i++) {
-        const sample = Math.max(-1, Math.min(1, float32[i]));
-        int16[i] = sample * 0x7FFF;
-      }
-      console.log('[AudioService] Using PCM fallback encoding');
-      return int16.buffer;
+      console.error('[AudioService] Encode error, reinitializing:', error);
+      // Try to reinitialize and retry once
+      await this.opusEncoder.reinitialize();
+      const encoded = await this.opusEncoder.encode(float32);
+      await this.opusEncoder.reinitialize();
+      return encoded.buffer;
     }
   }
 
@@ -325,24 +343,33 @@ export class AudioServiceV2 {
     const encodedBuffer = this.base64ToArrayBuffer(audioData.data);
 
     // Decode the Opus data
-    let decodedData: ArrayBuffer;
-    try {
-      const opusData = new Uint8Array(encodedBuffer);
-      const float32Data = await this.opusCodec.decode(opusData);
-      console.log('[AudioService] Decoded audio:', opusData.length, 'bytes to', float32Data.length, 'samples');
-
-      // Convert Float32Array back to ArrayBuffer for compatibility
-      const int16 = new Int16Array(float32Data.length);
-      for (let i = 0; i < float32Data.length; i++) {
-        const sample = Math.max(-1, Math.min(1, float32Data[i]));
-        int16[i] = sample * 0x7FFF;
-      }
-      decodedData = int16.buffer;
-    } catch (error) {
-      console.error('[AudioService] Opus decoding failed:', error);
-      // Fallback - assume it's already PCM
-      decodedData = encodedBuffer;
+    const opusData = new Uint8Array(encodedBuffer);
+    let float32Data: Float32Array;
+    
+    if (!this.opusEncoder) {
+      throw new Error('Opus decoder not available');
     }
+    
+    try {
+      float32Data = await this.opusEncoder.decode(opusData);
+      console.log('[AudioService] Decoded audio:', opusData.length, 'bytes to', float32Data.length, 'samples');
+      // Re-initialize decoder for next use
+      await this.opusEncoder.reinitialize();
+    } catch (error) {
+      console.error('[AudioService] Decode error, reinitializing:', error);
+      // Try to reinitialize and retry once
+      await this.opusEncoder.reinitialize();
+      float32Data = await this.opusEncoder.decode(opusData);
+      await this.opusEncoder.reinitialize();
+    }
+
+    // Convert Float32Array back to ArrayBuffer for compatibility
+    const int16 = new Int16Array(float32Data.length);
+    for (let i = 0; i < float32Data.length; i++) {
+      const sample = Math.max(-1, Math.min(1, float32Data[i]));
+      int16[i] = sample * 0x7FFF;
+    }
+    const decodedData = int16.buffer;
 
     const packet: AudioPacket = {
       sequenceNumber: audioData.sequence || 0,
@@ -620,7 +647,10 @@ export class AudioServiceV2 {
     // Clear buffers
     this.jitterBuffers.clear();
 
-    // Cleanup Opus codec
-    destroyOpusCodec();
+    // Cleanup Opus encoder
+    if (this.opusEncoder) {
+      this.opusEncoder.destroy();
+      this.opusEncoder = null;
+    }
   }
 }

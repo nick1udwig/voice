@@ -7,6 +7,8 @@ class AudioProcessor extends AudioWorkletProcessor {
     this.frameSize = Math.floor(this.sampleRate * this.frameDuration / 1000);
     this.buffer = new Float32Array(this.frameSize);
     this.bufferIndex = 0;
+    this.frameCount = 0;
+    console.log('[AudioProcessor] Initialized with frameSize:', this.frameSize, 'sampleRate:', this.sampleRate);
   }
   
   process(inputs, outputs, parameters) {
@@ -20,6 +22,10 @@ class AudioProcessor extends AudioWorkletProcessor {
         
         if (this.bufferIndex >= this.frameSize) {
           // Send complete frame
+          this.frameCount++;
+          if (this.frameCount % 50 === 0) { // Log every 50 frames (1 second)
+            console.log('[AudioProcessor] Sending frame', this.frameCount, 'with', this.frameSize, 'samples');
+          }
           this.port.postMessage({
             type: 'audio-frame',
             buffer: this.buffer.buffer.slice(0)

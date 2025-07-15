@@ -1,6 +1,7 @@
 use std::collections::{HashMap, BTreeMap};
 use std::time::Instant;
 use ringbuf::{HeapRb, HeapProducer, HeapConsumer};
+use opus::{Decoder, Encoder, Channels, Application};
 
 const SAMPLE_RATE: u32 = 48000;
 const CHANNELS: u32 = 1;
@@ -21,8 +22,9 @@ pub struct JitterStats {
 }
 
 pub struct AudioProcessor {
-    // For now, we'll pass through the Opus data without re-encoding
-    // The frontend already handles Opus encoding/decoding
+    // Opus encoder/decoder for each participant
+    decoders: HashMap<String, Decoder>,
+    encoder: Option<Encoder>,
     
     // Ring buffers for jitter handling - can't derive Debug
     #[allow(dead_code)]
@@ -30,7 +32,7 @@ pub struct AudioProcessor {
     #[allow(dead_code)]
     output_buffers: HashMap<String, HeapConsumer<f32>>,
     
-    // Mixing state - we'll work with raw Opus packets
+    // Mixing state
     participant_audio_raw: HashMap<String, Vec<u8>>, // Store raw Opus data
     participant_audio: HashMap<String, Vec<f32>>, // Decoded audio for mixing
     master_mix: Vec<f32>,
@@ -45,7 +47,18 @@ pub struct AudioProcessor {
 
 impl AudioProcessor {
     pub fn new() -> Self {
+        // Create a shared encoder for mix outputs
+        let encoder = match Encoder::new(SAMPLE_RATE, Channels::Mono, Application::Voip) {
+            Ok(enc) => Some(enc),
+            Err(e) => {
+                eprintln!("Failed to create Opus encoder: {}", e);
+                None
+            }
+        };
+        
         Self {
+            decoders: HashMap::new(),
+            encoder,
             input_buffers: HashMap::new(),
             output_buffers: HashMap::new(),
             participant_audio_raw: HashMap::new(),
@@ -62,6 +75,16 @@ impl AudioProcessor {
     }
     
     pub fn add_participant(&mut self, participant_id: String) -> Result<(), String> {
+        // Create Opus decoder for this participant
+        match Decoder::new(SAMPLE_RATE, Channels::Mono) {
+            Ok(decoder) => {
+                self.decoders.insert(participant_id.clone(), decoder);
+            }
+            Err(e) => {
+                return Err(format!("Failed to create Opus decoder: {}", e));
+            }
+        }
+        
         // Create jitter buffer (100ms capacity)
         let buffer_size = (SAMPLE_RATE as usize * 100) / 1000;
         let (producer, consumer) = HeapRb::<f32>::new(buffer_size).split();
@@ -76,6 +99,7 @@ impl AudioProcessor {
     }
     
     pub fn remove_participant(&mut self, participant_id: &str) {
+        self.decoders.remove(participant_id);
         self.input_buffers.remove(participant_id);
         self.output_buffers.remove(participant_id);
         self.participant_audio_raw.remove(participant_id);
@@ -86,14 +110,78 @@ impl AudioProcessor {
     }
     
     pub fn decode_audio(&mut self, participant_id: &str, opus_data: &[u8]) -> Result<Vec<f32>, String> {
-        // For now, we'll store the raw Opus data and return dummy decoded data
-        // The actual decoding happens in the frontend
+        println!("AudioProcessor: decode_audio for {} with {} bytes", participant_id, opus_data.len());
+        
+        // Check for and strip header if present
+        let (actual_opus_data, _is_simple_format) = if opus_data.len() >= 4 && opus_data[0] == 0x4F {
+            if opus_data[1] == 0x50 {
+                // 'OP' - Simple PCM format - reject it, we only use real Opus
+                return Err("Simple PCM format not supported - use real Opus encoding".to_string());
+            } else if opus_data[1] == 0x52 {
+                // 'OR' - Real Opus format
+                let data_length = ((opus_data[2] as usize) << 8) | (opus_data[3] as usize);
+                println!("AudioProcessor: Found Opus header, data length: {}", data_length);
+                if opus_data.len() >= 4 + data_length {
+                    (&opus_data[4..4 + data_length], false)
+                } else {
+                    println!("AudioProcessor: Invalid header, using all data");
+                    (opus_data, false)
+                }
+            } else {
+                println!("AudioProcessor: Unknown header format: {:02X} {:02X}", opus_data[0], opus_data[1]);
+                (opus_data, false)
+            }
+        } else {
+            println!("AudioProcessor: No header found, using raw data");
+            (opus_data, false)
+        };
+        
+        // Store the raw Opus data (without header)
         if let Some(raw_audio) = self.participant_audio_raw.get_mut(participant_id) {
-            *raw_audio = opus_data.to_vec();
+            *raw_audio = actual_opus_data.to_vec();
+            println!("AudioProcessor: Stored {} bytes of raw audio for {}", actual_opus_data.len(), participant_id);
+        } else {
+            println!("AudioProcessor: No raw audio buffer for {}", participant_id);
         }
         
-        // Return silence for now - in a real implementation, we'd decode here
-        Ok(vec![0.0; FRAME_SIZE])
+        // Decode using the participant's decoder
+        if let Some(decoder) = self.decoders.get_mut(participant_id) {
+            // Prepare output buffer for decoded samples
+            let mut output = vec![0i16; FRAME_SIZE];
+            
+            println!("AudioProcessor: Attempting to decode {} bytes of Opus data", actual_opus_data.len());
+            match decoder.decode(actual_opus_data, &mut output, false) {
+                Ok(samples_decoded) => {
+                    println!("AudioProcessor: Decoded {} samples", samples_decoded);
+                    
+                    // Convert i16 samples to f32
+                    let mut float_output = Vec::with_capacity(samples_decoded);
+                    let mut max_sample = 0.0f32;
+                    for i in 0..samples_decoded {
+                        let sample = output[i] as f32 / 32768.0;
+                        max_sample = max_sample.max(sample.abs());
+                        float_output.push(sample);
+                    }
+                    
+                    println!("AudioProcessor: Max decoded sample amplitude: {}", max_sample);
+                    
+                    // Pad with zeros if needed
+                    while float_output.len() < FRAME_SIZE {
+                        float_output.push(0.0);
+                    }
+                    
+                    Ok(float_output)
+                }
+                Err(e) => {
+                    eprintln!("Opus decode error for participant {}: {}", participant_id, e);
+                    // Return silence on error
+                    Ok(vec![0.0; FRAME_SIZE])
+                }
+            }
+        } else {
+            println!("AudioProcessor: No decoder found for participant {}", participant_id);
+            Err(format!("No decoder found for participant {}", participant_id))
+        }
     }
     
     pub fn update_participant_audio(&mut self, participant_id: &str, audio: Vec<f32>) {
@@ -109,15 +197,30 @@ impl AudioProcessor {
         let mut outputs = HashMap::new();
         
         println!("AudioProcessor: Total participants: {}", self.participant_audio_raw.len());
-        for (id, data) in &self.participant_audio_raw {
-            println!("  Participant {}: {} bytes of audio", id, data.len());
-        }
+        println!("AudioProcessor: Participant audio buffers: {:?}", 
+            self.participant_audio.iter().map(|(id, audio)| {
+                let non_zero = audio.iter().filter(|&&s| s.abs() > 0.0001).count();
+                (id.clone(), audio.len(), non_zero)
+            }).collect::<Vec<_>>()
+        );
         
-        // Collect all non-empty audio data from participants
-        let active_participants: Vec<(String, Vec<u8>)> = self.participant_audio_raw
+        // First check who has raw audio data
+        let participants_with_raw_audio: Vec<(String, Vec<u8>)> = self.participant_audio_raw
             .iter()
             .filter(|(_, data)| !data.is_empty())
             .map(|(id, data)| (id.clone(), data.clone()))
+            .collect();
+        
+        println!("AudioProcessor: Participants with raw audio: {:?}", 
+            participants_with_raw_audio.iter().map(|(id, data)| (id, data.len())).collect::<Vec<_>>()
+        );
+        
+        // Now collect decoded audio for those who have raw audio
+        let active_participants: Vec<(String, Vec<f32>)> = participants_with_raw_audio
+            .iter()
+            .filter_map(|(id, _)| {
+                self.participant_audio.get(id).map(|audio| (id.clone(), audio.clone()))
+            })
             .collect();
         
         if active_participants.is_empty() {
@@ -125,37 +228,158 @@ impl AudioProcessor {
             return outputs;
         }
         
+        // If we don't have an encoder, return empty
+        if self.encoder.is_none() {
+            eprintln!("No Opus encoder available");
+            return outputs;
+        }
+        
         // Create listener mix - combine all speaker audio
-        // For now, we'll use the first active speaker's audio
-        // In a full implementation, this would properly mix all speakers
-        if let Some((_, first_audio)) = active_participants.first() {
-            outputs.insert("__listener__".to_string(), first_audio.clone());
+        if !active_participants.is_empty() {
+            let mut listener_mix = vec![0.0f32; FRAME_SIZE];
+            
+            // Mix all active participants
+            for (_, audio) in &active_participants {
+                for i in 0..FRAME_SIZE.min(audio.len()) {
+                    listener_mix[i] += audio[i];
+                }
+            }
+            
+            // Apply compression to prevent clipping
+            Self::apply_compression_static(&mut listener_mix);
+            
+            // Convert to i16 and encode
+            let i16_buffer: Vec<i16> = listener_mix.iter()
+                .map(|&sample| (sample.max(-1.0).min(1.0) * 32767.0) as i16)
+                .collect();
+            
+            let mut opus_output = vec![0u8; 4000]; // Max Opus frame size
+            if let Some(encoder) = self.encoder.as_mut() {
+                match encoder.encode(&i16_buffer, &mut opus_output) {
+                    Ok(bytes_written) => {
+                        opus_output.truncate(bytes_written);
+                        // Add header for frontend
+                        let with_header = Self::add_opus_header(&opus_output);
+                        outputs.insert("__listener__".to_string(), with_header);
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to encode listener mix: {}", e);
+                    }
+                }
+            }
         }
         
         // Create mix-minus for each active participant
-        // Each participant gets audio from others but not themselves
-        if active_participants.len() == 1 {
-            // Single participant - they don't get any audio back (no one else to hear)
-            // Don't insert anything for them - this prevents sending empty data
-        } else if active_participants.len() == 2 {
-            // Two participants - each gets the other's audio
-            outputs.insert(active_participants[0].0.clone(), active_participants[1].1.clone());
-            outputs.insert(active_participants[1].0.clone(), active_participants[0].1.clone());
-        } else {
-            // Multiple participants - for now, simple round-robin
-            // Each participant hears the next participant in the list
-            for i in 0..active_participants.len() {
-                let sender_id = &active_participants[i].0;
-                let next_index = (i + 1) % active_participants.len();
-                let audio_to_send = &active_participants[next_index].1;
-                outputs.insert(sender_id.clone(), audio_to_send.clone());
+        for (target_idx, (target_id, _)) in active_participants.iter().enumerate() {
+            if active_participants.len() == 1 {
+                // Single participant - no audio to send back
+                continue;
+            }
+            
+            let mut mix_minus = vec![0.0f32; FRAME_SIZE];
+            let mut has_audio = false;
+            
+            // Mix all participants except the target
+            for (idx, (_, audio)) in active_participants.iter().enumerate() {
+                if idx != target_idx {
+                    has_audio = true;
+                    for i in 0..FRAME_SIZE.min(audio.len()) {
+                        mix_minus[i] += audio[i];
+                    }
+                }
+            }
+            
+            if has_audio {
+                // Apply compression
+                Self::apply_compression_static(&mut mix_minus);
+                
+                // Convert to i16 and encode
+                let i16_buffer: Vec<i16> = mix_minus.iter()
+                    .map(|&sample| (sample.max(-1.0).min(1.0) * 32767.0) as i16)
+                    .collect();
+                
+                let mut opus_output = vec![0u8; 4000];
+                if let Some(encoder) = self.encoder.as_mut() {
+                    match encoder.encode(&i16_buffer, &mut opus_output) {
+                        Ok(bytes_written) => {
+                            opus_output.truncate(bytes_written);
+                            // Add header for frontend
+                            let with_header = Self::add_opus_header(&opus_output);
+                            outputs.insert(target_id.clone(), with_header);
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to encode mix-minus for {}: {}", target_id, e);
+                        }
+                    }
+                }
             }
         }
         
         outputs
     }
     
+    fn add_opus_header(opus_data: &[u8]) -> Vec<u8> {
+        let mut with_header = Vec::with_capacity(opus_data.len() + 4);
+        with_header.push(0x4F); // 'O'
+        with_header.push(0x52); // 'R' for opus-recorder
+        with_header.push((opus_data.len() >> 8) as u8);
+        with_header.push(opus_data.len() as u8);
+        with_header.extend_from_slice(opus_data);
+        with_header
+    }
+    
+    fn decode_simple_pcm(&mut self, participant_id: &str, pcm_data: &[u8], original_size: usize) -> Result<Vec<f32>, String> {
+        println!("AudioProcessor: Decoding simple PCM format, {} bytes to {} samples", pcm_data.len(), original_size);
+        
+        // Store the raw data
+        if let Some(raw_audio) = self.participant_audio_raw.get_mut(participant_id) {
+            // For simple format, store the original PCM data with header for re-encoding
+            let mut with_header = Vec::with_capacity(pcm_data.len() + 4);
+            with_header.push(0x4F); // 'O'
+            with_header.push(0x50); // 'P'
+            with_header.push((original_size >> 8) as u8);
+            with_header.push(original_size as u8);
+            with_header.extend_from_slice(pcm_data);
+            *raw_audio = with_header;
+        }
+        
+        // Decompress the simple format
+        const COMPRESSION_RATIO: usize = 10;
+        let mut float_output = vec![0.0f32; original_size];
+        let compressed_samples = pcm_data.len() / 2; // 2 bytes per i16
+        
+        if compressed_samples > 0 {
+            for i in 0..compressed_samples {
+                let sample_i16 = (pcm_data[i * 2 + 1] as i16) << 8 | (pcm_data[i * 2] as i16);
+                let sample_f32 = sample_i16 as f32 / 32768.0;
+                
+                // Fill decompressed samples
+                let start_idx = i * COMPRESSION_RATIO;
+                let end_idx = ((i + 1) * COMPRESSION_RATIO).min(original_size);
+                
+                // Simple interpolation if we have next sample
+                let next_sample = if i + 1 < compressed_samples {
+                    let next_i16 = (pcm_data[(i + 1) * 2 + 1] as i16) << 8 | (pcm_data[(i + 1) * 2] as i16);
+                    next_i16 as f32 / 32768.0
+                } else {
+                    sample_f32
+                };
+                
+                for j in start_idx..end_idx {
+                    let t = (j - start_idx) as f32 / COMPRESSION_RATIO as f32;
+                    float_output[j] = sample_f32 * (1.0 - t) + next_sample * t;
+                }
+            }
+        }
+        
+        Ok(float_output)
+    }
+    
     fn apply_compression(&self, buffer: &mut [f32]) {
+        Self::apply_compression_static(buffer);
+    }
+    
+    fn apply_compression_static(buffer: &mut [f32]) {
         const THRESHOLD: f32 = 0.7;
         const RATIO: f32 = 4.0;
         
@@ -300,6 +524,8 @@ impl std::fmt::Debug for AudioProcessor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AudioProcessor")
             .field("participant_count", &self.participant_audio_raw.len())
+            .field("decoders_count", &self.decoders.len())
+            .field("encoder_available", &self.encoder.is_some())
             .field("master_mix_len", &self.master_mix.len())
             .finish()
     }

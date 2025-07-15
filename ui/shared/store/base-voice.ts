@@ -74,7 +74,7 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
       const ws = new WebSocket(wsUrl);
 
       ws.onopen = () => {
-        console.log('WebSocket connected');
+        console.log('WebSocket connected, ws object:', ws);
         set({
           wsConnection: ws,
           connectionStatus: 'connected',
@@ -136,6 +136,7 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
     const audioService = get().audioService;
     const isMuted = get().isMuted;
     const ws = get().wsConnection;
+    console.log('[VoiceStore] Current state - isMuted:', isMuted, 'audioService:', !!audioService, 'ws:', !!ws, 'ws.readyState:', ws?.readyState);
 
     if (audioService) {
       const newMutedState = !isMuted;
@@ -146,6 +147,10 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
 
       // Then update audio service
       audioService.toggleMute(newMutedState);
+      
+      // Verify the state was updated
+      const verifyMuted = get().isMuted;
+      console.log('[VoiceStore] Verified mute state after update:', verifyMuted);
 
       // Send mute state to server
       if (ws && ws.readyState === WebSocket.OPEN) {
@@ -153,6 +158,8 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
         ws.send(JSON.stringify({
           Mute: newMutedState
         }));
+      } else {
+        console.warn('[VoiceStore] Cannot send mute state - WebSocket not ready. State:', ws?.readyState);
       }
     } else {
       console.error('[VoiceStore] No audio service available for mute toggle');
@@ -265,6 +272,13 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
         }
         return state;
       });
+    }
+
+    // Handle error messages
+    if (message.Error) {
+      console.error('[VoiceStore] Server error:', message.Error);
+      // You might want to show this error to the user in a notification
+      // For now, just log it
     }
 
     // Handle call ended

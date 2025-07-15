@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Simple Opus Test</title>
+</head>
+<body>
+    <h1>Simple Opus Encoder/Decoder Test</h1>
+    
+    <button id="startTest">Start Test</button>
+    <button id="testEncode">Test Encode</button>
+    <button id="testDecode">Test Decode</button>
+    
+    <div id="status">Status: Ready</div>
+    <div id="results"></div>
+    
+    <script type="module">
+        import { SimpleOpusService } from '../shared/services/simple-opus-service.js';
+        
+        let service = null;
+        const statusEl = document.getElementById('status');
+        const resultsEl = document.getElementById('results');
+        
+        function log(msg) {
+            console.log(msg);
+            const div = document.createElement('div');
+            div.textContent = `[${new Date().toISOString()}] ${msg}`;
+            resultsEl.appendChild(div);
+        }
+        
+        document.getElementById('startTest').addEventListener('click', async () => {
+            try {
+                statusEl.textContent = 'Status: Initializing...';
+                log('Creating SimpleOpusService...');
+                
+                service = new SimpleOpusService();
+                
+                log('Initializing with config...');
+                await service.initialize({
+                    sampleRate: 48000,
+                    channels: 1,
+                    bitRate: 32000,
+                    frameSize: 20
+                });
+                
+                statusEl.textContent = 'Status: Initialized';
+                log('Service initialized successfully!');
+            } catch (error) {
+                statusEl.textContent = 'Status: Error';
+                log(`Error: ${error.message}`);
+                console.error(error);
+            }
+        });
+        
+        document.getElementById('testEncode').addEventListener('click', async () => {
+            if (!service) {
+                log('Service not initialized!');
+                return;
+            }
+            
+            try {
+                statusEl.textContent = 'Status: Encoding...';
+                log('Creating test audio data...');
+                
+                // Create a simple sine wave
+                const sampleRate = 48000;
+                const duration = 0.02; // 20ms
+                const frequency = 440; // A4 note
+                const samples = sampleRate * duration;
+                const audioData = new Float32Array(samples);
+                
+                for (let i = 0; i < samples; i++) {
+                    audioData[i] = Math.sin(2 * Math.PI * frequency * i / sampleRate) * 0.5;
+                }
+                
+                log(`Encoding ${audioData.length} samples...`);
+                const encoded = await service.encode(audioData);
+                
+                log(`Encoded to ${encoded.length} bytes`);
+                log(`Header: ${encoded[0]},${encoded[1]} Length: ${(encoded[2] << 8) | encoded[3]}`);
+                
+                // Store for decode test
+                window.lastEncoded = encoded;
+                
+                statusEl.textContent = 'Status: Encode complete';
+            } catch (error) {
+                statusEl.textContent = 'Status: Encode error';
+                log(`Encode error: ${error.message}`);
+                console.error(error);
+            }
+        });
+        
+        document.getElementById('testDecode').addEventListener('click', async () => {
+            if (!service) {
+                log('Service not initialized!');
+                return;
+            }
+            
+            if (!window.lastEncoded) {
+                log('No encoded data available. Run encode test first.');
+                return;
+            }
+            
+            try {
+                statusEl.textContent = 'Status: Decoding...';
+                log(`Decoding ${window.lastEncoded.length} bytes...`);
+                
+                const decoded = await service.decode(window.lastEncoded);
+                
+                log(`Decoded to ${decoded.length} samples`);
+                log(`First 10 samples: ${Array.from(decoded.slice(0, 10)).map(v => v.toFixed(3)).join(', ')}`);
+                
+                statusEl.textContent = 'Status: Decode complete';
+            } catch (error) {
+                statusEl.textContent = 'Status: Decode error';
+                log(`Decode error: ${error.message}`);
+                console.error(error);
+            }
+        });
+    </script>
+</body>
+</html>

@@ -238,7 +238,8 @@ export class OpusCodec {
         decode(compressedData) {
           const compressed = new Uint8Array(compressedData);
           
-          if (compressed.length < 4 || compressed[0] !== 0x4F || compressed[1] !== 0x50) {
+          // Check header - accept either 'OP' (0x50) or 'OR' (0x52)
+          if (compressed.length < 4 || compressed[0] !== 0x4F || (compressed[1] !== 0x50 && compressed[1] !== 0x52)) {
             throw new Error('Invalid Opus-like data format');
           }
           

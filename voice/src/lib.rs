@@ -467,10 +467,12 @@ impl VoiceState {
 
     #[ws]
     fn websocket(&mut self, channel_id: u32, message_type: WsMessageType, blob: LazyLoadBlob) {
+        kiprintln!("WebSocket event - channel_id: {}, type: {:?}", channel_id, message_type);
         match message_type {
             WsMessageType::Text => {
                 if let Ok(message) = String::from_utf8(blob.bytes.clone()) {
-                    kiprintln!("Received WebSocket text message: {}", message);
+                    kiprintln!("Received WebSocket text message from channel {} (connections: {:?}): {}", 
+                        channel_id, self.connections.keys().collect::<Vec<_>>(), message);
 
                     // Parse the message as our client message type
                     match serde_json::from_str::<WsClientMessage>(&message) {
@@ -564,6 +566,7 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
                 call.participants.insert(participant_id.clone(), participant.clone());
 
                 // Store connection mapping
+                kiprintln!("Storing connection - channel_id: {} -> participant_id: {}", channel_id, participant_id);
                 state.connections.insert(channel_id, participant_id.clone());
                 state.participant_channels.insert(participant_id.clone(), channel_id);
 
@@ -618,9 +621,14 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
     }
 
     // For all other messages, require authentication
+    kiprintln!("Checking auth for channel_id: {}, connections: {:?}", channel_id, state.connections.keys().collect::<Vec<_>>());
     let participant_id = match state.connections.get(&channel_id) {
-        Some(id) => id.clone(),
+        Some(id) => {
+            kiprintln!("Found participant_id: {} for channel: {}", id, channel_id);
+            id.clone()
+        },
         None => {
+            kiprintln!("No connection found for channel_id: {}", channel_id);
             send_error_to_channel(channel_id, "Not authenticated");
             return;
         }
@@ -784,7 +792,9 @@ fn can_chat(role: &Role) -> bool {
 }
 
 fn handle_disconnect(state: &mut VoiceState, channel_id: u32) {
+    kiprintln!("Handling disconnect for channel_id: {}", channel_id);
     if let Some(participant_id) = state.connections.remove(&channel_id) {
+        kiprintln!("Removed connection for participant: {}", participant_id);
         state.participant_channels.remove(&participant_id);
 
         // Find which call this participant is in

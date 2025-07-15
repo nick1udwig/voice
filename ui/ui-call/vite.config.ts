@@ -44,6 +44,12 @@ const copyWorkersPlugin = () => {
       try {
         copyFileSync(resolve('../shared/workers/audio-encoder.js'), resolve('dist/audio-encoder.js'));
         copyFileSync(resolve('../shared/workers/audio-decoder.js'), resolve('dist/audio-decoder.js'));
+        copyFileSync(resolve('public/audio-processor.js'), resolve('dist/audio-processor.js'));
+        copyFileSync(resolve('public/encoderWorker.min.js'), resolve('dist/encoderWorker.min.js'));
+        copyFileSync(resolve('public/decoderWorker.min.js'), resolve('dist/decoderWorker.min.js'));
+        copyFileSync(resolve('public/decoderWorker.min.wasm'), resolve('dist/decoderWorker.min.wasm'));
+        copyFileSync(resolve('../public/opus-worker-encoder.js'), resolve('dist/opus-worker-encoder.js'));
+        copyFileSync(resolve('../public/opus-worker-decoder.js'), resolve('dist/opus-worker-decoder.js'));
         console.log('Copied worker files to ui-call dist directory');
       } catch (err) {
         console.error('Error copying worker files:', err);
