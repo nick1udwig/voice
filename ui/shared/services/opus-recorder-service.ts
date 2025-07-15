@@ -3,6 +3,10 @@
 
 // @ts-ignore
 import Recorder from 'opus-recorder';
+// @ts-ignore
+import encoderPath from 'opus-recorder/dist/encoderWorker.min.js';
+// @ts-ignore
+import decoderPath from 'opus-recorder/dist/decoderWorker.min.js';
 
 interface OpusEncoderConfig {
   sampleRate: number;
@@ -13,329 +17,331 @@ interface OpusEncoderConfig {
 
 export class OpusRecorderService {
   private config: OpusEncoderConfig | null = null;
-  private encoder: any = null; // Recorder instance
-  private decoder: Worker | null = null;
+  private recorder: any = null; // Recorder instance
+  private decoderWorker: Worker | null = null;
   private decoderReady = false;
-  private encoderReady = false;
-  private dummyContext: AudioContext | null = null;
+  private isInitialized = false;
+  private audioContext: AudioContext | null = null;
   
   // For collecting encoded output
-  private encodePendingResolve: ((data: Uint8Array) => void) | null = null;
-  private encodePendingReject: ((error: Error) => void) | null = null;
-  private collectedData: Uint8Array[] = [];
+  private encodedChunks: Uint8Array[] = [];
+  private encodeResolve: ((data: Uint8Array) => void) | null = null;
+  private encodeReject: ((error: Error) => void) | null = null;
   
-  // For decoder callbacks
-  private decoderCallbacks = new Map<number, (data: Float32Array) => void>();
-  private messageId = 0;
+  // For decoding
+  private decodeResolve: ((data: Float32Array) => void) | null = null;
+  private decodeReject: ((error: Error) => void) | null = null;
 
   async initialize(config: OpusEncoderConfig): Promise<void> {
+    if (this.isInitialized) {
+      console.log('[OpusRecorderService] Already initialized');
+      return;
+    }
+    
     this.config = config;
     
-    // Use the imported Recorder class
-    const RecorderClass = Recorder;
+    // Get proper base path
+    let base = '';
+    if (window.location.pathname.includes('/voice:voice:sys')) {
+      base = '/voice:voice:sys';
+    } else if (window.location.pathname.includes('/call/')) {
+      base = window.location.pathname.split('/call/')[0];
+    } else {
+      const pathParts = window.location.pathname.split('/');
+      pathParts.pop();
+      base = pathParts.join('/');
+    }
     
-    // Initialize encoder using opus-recorder
-    const BASE_URL = import.meta.env.BASE_URL || '';
-    const encoderPath = `${BASE_URL}/encoderWorker.min.js`;
+    const actualEncoderPath = `${base}/encoderWorker.min.js`;
+    const actualDecoderPath = `${base}/decoderWorker.min.js`;
     
-    console.log('[OpusRecorderService] Initializing encoder with config:', config);
+    console.log('[OpusRecorderService] Initializing with paths:', actualEncoderPath, actualDecoderPath);
     
-    // Create a dummy audio context and source to satisfy opus-recorder's requirements
-    this.dummyContext = new AudioContext({ sampleRate: config.sampleRate });
-    const dummyBuffer = this.dummyContext.createBuffer(1, 1, config.sampleRate);
-    const dummySource = this.dummyContext.createBufferSource();
-    dummySource.buffer = dummyBuffer;
-    const dummyNode = this.dummyContext.createMediaStreamDestination();
-    dummySource.connect(dummyNode);
+    // Create audio context
+    this.audioContext = new AudioContext({ sampleRate: config.sampleRate });
     
-    // Create recorder instance with our config and dummy source
-    this.encoder = new RecorderClass({
-      encoderPath: encoderPath,
+    // Create a silent audio source to prevent getUserMedia calls
+    const oscillator = this.audioContext.createOscillator();
+    oscillator.frequency.value = 0;
+    const gain = this.audioContext.createGain();
+    gain.gain.value = 0;
+    oscillator.connect(gain);
+    const destination = this.audioContext.createMediaStreamDestination();
+    gain.connect(destination);
+    oscillator.start();
+    
+    // Create source node from the silent stream
+    const sourceNode = this.audioContext.createMediaStreamSource(destination.stream);
+    
+    // Create recorder instance with our source node
+    this.recorder = new Recorder({
+      encoderPath: actualEncoderPath,
       encoderSampleRate: config.sampleRate,
-      encoderFrameSize: Math.floor(config.sampleRate * (config.frameSize || 20) / 1000),
+      originalSampleRateOverride: config.sampleRate,
+      encoderFrameSize: 20, // 20ms frames
       numberOfChannels: config.channels,
       encoderBitRate: config.bitRate || 32000,
-      encoderApplication: 2048, // Voice
+      encoderApplication: 2048, // OPUS_APPLICATION_VOIP
+      encoderComplexity: 8,
+      resampleQuality: 3,
       streamPages: true, // Stream pages as they're encoded
-      maxFramesPerPage: 1, // Send immediately
-      originalSampleRateOverride: config.sampleRate,
-      sourceNode: {
-        context: this.dummyContext,
-        mediaStream: dummyNode.stream,
-        connect: () => {} // Dummy connect function
-      },
-      monitorGain: 0, // No monitoring
-      recordingGain: 1
+      maxFramesPerPage: 40,
+      monitorGain: 0,
+      recordingGain: 1,
+      bufferLength: 4096,
+      sourceNode: sourceNode // Provide the source node to prevent getUserMedia
     });
     
-    // Set up encoder callbacks
-    this.encoder.ondataavailable = (arrayBuffer: ArrayBuffer) => {
-      console.log('[OpusRecorderService] Data available from encoder:', arrayBuffer.byteLength, 'bytes');
-      if (this.encodePendingResolve) {
-        // For streaming mode, resolve immediately
-        const data = new Uint8Array(arrayBuffer);
-        const resolve = this.encodePendingResolve;
-        this.encodePendingResolve = null;
-        this.encodePendingReject = null;
-        resolve(data);
-      } else {
-        // Collect data for later
-        this.collectedData.push(new Uint8Array(arrayBuffer));
-      }
+    // Set up recorder callbacks
+    this.recorder.ondataavailable = (arrayBuffer: ArrayBuffer) => {
+      console.log('[OpusRecorderService] Data available:', arrayBuffer.byteLength, 'bytes');
+      this.encodedChunks.push(new Uint8Array(arrayBuffer));
     };
     
-    this.encoder.onstart = () => {
-      console.log('[OpusRecorderService] Encoder started');
-      this.encoderReady = true;
+    this.recorder.onstart = () => {
+      console.log('[OpusRecorderService] Recorder started');
     };
     
-    // Initialize decoder worker directly
-    const decoderPath = `${BASE_URL}/decoderWorker.min.js`;
-    console.log('[OpusRecorderService] Loading decoder from:', decoderPath);
+    this.recorder.onstop = () => {
+      console.log('[OpusRecorderService] Recorder stopped');
+    };
     
-    this.decoder = new Worker(decoderPath);
+    // Initialize decoder
+    await this.initializeDecoder(actualDecoderPath, config);
     
-    this.decoder.postMessage({
-      command: 'init',
-      decoderSampleRate: config.sampleRate,
-      outputBufferSampleRate: config.sampleRate,
-      numberOfChannels: config.channels
-    });
-    
-    // Set up decoder message handler
-    this.decoder.onmessage = (e) => {
-      console.log('[OpusRecorderService] Decoder message:', e.data);
+    this.isInitialized = true;
+    console.log('[OpusRecorderService] Initialization complete');
+  }
+  
+  private async initializeDecoder(workerPath: string, config: OpusEncoderConfig): Promise<void> {
+    return new Promise((resolve) => {
+      this.decoderWorker = new Worker(workerPath);
       
-      if (e.data === 'done' || (e.data && e.data.message === 'done')) {
-        console.log('[OpusRecorderService] Decoder initialized');
-        this.decoderReady = true;
-      } else if (e.data && e.data.channelBuffers) {
-        // Handle decoded audio
-        const channelData = e.data.channelBuffers[0]; // Mono
-        const float32Data = new Float32Array(channelData);
-        
-        // Find and call the callback
-        if (this.decoderCallbacks.size > 0) {
-          const entry = this.decoderCallbacks.entries().next().value;
-          if (entry) {
-            const [id, callback] = entry;
-            callback(float32Data);
-            this.decoderCallbacks.delete(id);
-          }
-        }
-      }
-    };
-    
-    this.decoder.onerror = (error) => {
-      console.error('[OpusRecorderService] Decoder worker error:', error);
-    };
-    
-    // Start the encoder to initialize it
-    console.log('[OpusRecorderService] Starting encoder for initialization');
-    await this.encoder.start();
-    
-    // Wait for encoder to be ready (decoder is optional)
-    await new Promise<void>((resolve, reject) => {
+      let isResolved = false;
       const timeout = setTimeout(() => {
-        if (this.encoderReady) {
-          console.warn('[OpusRecorderService] Decoder initialization timed out, continuing with encoder only');
+        if (!isResolved) {
+          console.log('[OpusRecorderService] Decoder init timeout, continuing anyway');
+          isResolved = true;
+          this.decoderReady = true;
           resolve();
-        } else {
-          reject(new Error('Timeout waiting for encoder initialization'));
         }
-      }, 5000);
+      }, 2000);
       
-      const checkReady = () => {
-        if (this.encoderReady) {
-          // Wait a bit more for decoder, but don't block
-          setTimeout(() => {
-            clearTimeout(timeout);
-            if (!this.decoderReady) {
-              console.warn('[OpusRecorderService] Decoder not ready, but encoder is ready');
-            }
-            resolve();
-          }, 500);
-        } else {
-          setTimeout(checkReady, 10);
+      this.decoderWorker.onmessage = (e) => {
+        console.log('[OpusRecorderService] Decoder message:', e.data);
+        
+        if (!isResolved && e.data && e.data.message === 'ready') {
+          console.log('[OpusRecorderService] Decoder ready');
+          clearTimeout(timeout);
+          isResolved = true;
+          this.decoderReady = true;
+          resolve();
+        } else if (Array.isArray(e.data) && e.data.length > 0 && e.data[0] instanceof Float32Array) {
+          // Decoded audio
+          if (this.decodeResolve) {
+            const resolve = this.decodeResolve;
+            this.decodeResolve = null;
+            this.decodeReject = null;
+            resolve(e.data[0]);
+          }
+        } else if (e.data === null) {
+          // Decoding complete (from 'done' command)
+          console.log('[OpusRecorderService] Decode complete');
         }
       };
-      checkReady();
+      
+      this.decoderWorker.onerror = (error) => {
+        console.error('[OpusRecorderService] Decoder error:', error);
+        if (!isResolved) {
+          clearTimeout(timeout);
+          isResolved = true;
+          this.decoderReady = true; // Continue anyway
+          resolve();
+        }
+      };
+      
+      // Send init command
+      this.decoderWorker.postMessage({
+        command: 'init',
+        decoderSampleRate: config.sampleRate,
+        outputBufferSampleRate: config.sampleRate,
+        numberOfChannels: config.channels,
+        bufferLength: 4096,
+        resampleQuality: 3
+      });
     });
-    
-    console.log('[OpusRecorderService] Initialization complete');
   }
 
   async encode(audioData: Float32Array): Promise<Uint8Array> {
-    if (!this.encoder || !this.encoderReady) {
-      throw new Error('Opus encoder not ready');
+    if (!this.recorder || !this.audioContext || !this.isInitialized) {
+      throw new Error('Recorder not initialized');
     }
-
-    return new Promise((resolve, reject) => {
-      this.encodePendingResolve = (data: Uint8Array) => {
-        // Add our header format
-        const withHeader = new Uint8Array(data.length + 4);
-        withHeader[0] = 0x4F; // 'O'
-        withHeader[1] = 0x52; // 'R' for opus-recorder
-        withHeader[2] = (data.length >> 8) & 0xFF;
-        withHeader[3] = data.length & 0xFF;
-        withHeader.set(data, 4);
-        resolve(withHeader);
-      };
-      this.encodePendingReject = reject;
+    
+    return new Promise(async (resolve, reject) => {
+      this.encodedChunks = [];
+      this.encodeResolve = resolve;
+      this.encodeReject = reject;
       
       try {
-        // Access the encoder's internal worker to send data directly
-        if (this.encoder.encoder && this.encoder.encoder.postMessage) {
-          // Convert to Int16Array as expected by the encoder
-          const int16Data = new Int16Array(audioData.length);
-          for (let i = 0; i < audioData.length; i++) {
-            const sample = Math.max(-1, Math.min(1, audioData[i]));
-            int16Data[i] = Math.floor(sample * 0x7FFF);
+        // Create a buffer from the PCM data
+        const buffer = this.audioContext!.createBuffer(1, audioData.length, this.audioContext!.sampleRate);
+        buffer.copyToChannel(audioData, 0);
+        
+        // Create a buffer source
+        const source = this.audioContext!.createBufferSource();
+        source.buffer = buffer;
+        
+        // Create MediaStreamDestination
+        const destination = this.audioContext!.createMediaStreamDestination();
+        source.connect(destination);
+        
+        // Connect our audio buffer to the recorder's existing audio graph
+        // We need to temporarily disconnect the silent source and connect our real audio
+        const recorderNode = this.recorder.monitorGainNode || this.recorder.recordingGainNode;
+        if (recorderNode && this.recorder.sourceNode) {
+          try {
+            // Disconnect the silent source
+            this.recorder.sourceNode.disconnect();
+            
+            // Connect our new source
+            const mediaStreamSource = this.audioContext!.createMediaStreamSource(destination.stream);
+            mediaStreamSource.connect(recorderNode);
+            
+            // Store reference to restore later
+            const originalSourceNode = this.recorder.sourceNode;
+            this.recorder.sourceNode = mediaStreamSource;
+            
+            // Restore original after encoding
+            source.onended = () => {
+              try {
+                mediaStreamSource.disconnect();
+                originalSourceNode.connect(recorderNode);
+                this.recorder.sourceNode = originalSourceNode;
+              } catch (e) {
+                console.warn('[OpusRecorderService] Error restoring source:', e);
+              }
+            };
+          } catch (e) {
+            console.error('[OpusRecorderService] Error connecting source:', e);
           }
-          
-          // Create proper ArrayBuffer
-          const buffer = new ArrayBuffer(int16Data.length * 2);
-          const view = new DataView(buffer);
-          for (let i = 0; i < int16Data.length; i++) {
-            view.setInt16(i * 2, int16Data[i], true);
-          }
-          
-          // Send to encoder
-          this.encoder.encoder.postMessage({
-            command: 'encode',
-            buffers: [buffer]
-          }, [buffer]);
-          
-          // Force flush to get the encoded data immediately
-          setTimeout(() => {
-            if (this.encoder.encoder) {
-              this.encoder.encoder.postMessage({
-                command: 'flush'
-              });
-            }
-          }, 10);
-        } else {
-          reject(new Error('Encoder worker not accessible'));
         }
+        
+        // Calculate duration
+        const duration = (audioData.length / this.audioContext!.sampleRate) * 1000; // ms
+        
+        // Start recording
+        await this.recorder.start();
+        
+        // Start playing the buffer
+        source.start();
+        
+        // Stop after duration + buffer
+        setTimeout(async () => {
+          await this.recorder.stop();
+          
+          // Wait a bit for all data to arrive
+          setTimeout(() => {
+            // Combine all chunks
+            const totalLength = this.encodedChunks.reduce((sum, chunk) => sum + chunk.length, 0);
+            const combined = new Uint8Array(totalLength);
+            let offset = 0;
+            for (const chunk of this.encodedChunks) {
+              combined.set(chunk, offset);
+              offset += chunk.length;
+            }
+            
+            // Add header
+            const withHeader = new Uint8Array(combined.length + 4);
+            withHeader[0] = 0x4F; // 'O'
+            withHeader[1] = 0x52; // 'R' for real opus
+            withHeader[2] = (combined.length >> 8) & 0xFF;
+            withHeader[3] = combined.length & 0xFF;
+            withHeader.set(combined, 4);
+            
+            if (this.encodeResolve) {
+              this.encodeResolve(withHeader);
+              this.encodeResolve = null;
+              this.encodeReject = null;
+            }
+          }, 100);
+        }, duration + 50);
+        
       } catch (error) {
         console.error('[OpusRecorderService] Encode error:', error);
-        this.encodePendingResolve = null;
-        this.encodePendingReject = null;
-        reject(error);
-      }
-      
-      // Timeout
-      setTimeout(() => {
-        if (this.encodePendingReject) {
-          this.encodePendingResolve = null;
-          const rej = this.encodePendingReject;
-          this.encodePendingReject = null;
-          rej(new Error('Encode timeout'));
+        if (this.encodeReject) {
+          this.encodeReject(error as Error);
+          this.encodeResolve = null;
+          this.encodeReject = null;
         }
-      }, 1000);
+      }
     });
   }
 
   async decode(opusData: Uint8Array): Promise<Float32Array> {
-    if (!this.decoderReady || !this.decoder) {
-      throw new Error('Opus decoder not ready');
+    if (!this.decoderWorker || !this.decoderReady) {
+      throw new Error('Decoder not ready');
     }
-
+    
+    // Skip our header if present
+    let actualOpusData = opusData;
+    if (opusData.length >= 4 && opusData[0] === 0x4F && opusData[1] === 0x52) {
+      actualOpusData = opusData.slice(4);
+    }
+    
     return new Promise((resolve, reject) => {
-      // Check header and extract actual Opus data
-      let actualOpusData: Uint8Array;
+      this.decodeResolve = resolve;
+      this.decodeReject = reject;
       
-      if (opusData.length >= 4 && opusData[0] === 0x4F) {
-        if (opusData[1] === 0x52 || opusData[1] === 0x50) {
-          // Our header format
-          const dataLength = (opusData[2] << 8) | opusData[3];
-          actualOpusData = opusData.slice(4, 4 + dataLength);
-          
-          // If it's old PCM format (OP), handle it
-          if (opusData[1] === 0x50) {
-            // Direct PCM data
-            const int16Count = dataLength / 2;
-            const int16Data = new Int16Array(actualOpusData.buffer, actualOpusData.byteOffset, int16Count);
-            const float32Data = new Float32Array(int16Data.length);
-            for (let i = 0; i < int16Data.length; i++) {
-              float32Data[i] = int16Data[i] / 0x7FFF;
-            }
-            resolve(float32Data);
-            return;
-          }
-        } else {
-          reject(new Error(`Unknown header format: ${opusData[0]},${opusData[1]}`));
-          return;
+      const timeout = setTimeout(() => {
+        if (this.decodeReject) {
+          this.decodeReject(new Error('Decode timeout'));
+          this.decodeResolve = null;
+          this.decodeReject = null;
         }
-      } else {
-        actualOpusData = opusData;
-      }
+      }, 5000);
       
-      const id = this.messageId++;
-      this.decoderCallbacks.set(id, resolve);
+      // Override resolve to clear timeout
+      const originalResolve = resolve;
+      this.decodeResolve = (data: Float32Array) => {
+        clearTimeout(timeout);
+        originalResolve(data);
+      };
       
-      // Send to decoder
-      const buffer = actualOpusData.buffer.slice(
-        actualOpusData.byteOffset,
-        actualOpusData.byteOffset + actualOpusData.byteLength
-      );
-      
-      this.decoder!.postMessage({
+      // Send decode command - decoder expects buffer, not array
+      this.decoderWorker!.postMessage({
         command: 'decode',
-        pages: [buffer]
-      }, [buffer]);
+        pages: actualOpusData.buffer
+      });
       
-      // Timeout
-      setTimeout(() => {
-        if (this.decoderCallbacks.has(id)) {
-          this.decoderCallbacks.delete(id);
-          reject(new Error('Decode timeout'));
-        }
-      }, 1000);
+      // Note: We do NOT send 'done' here as it would terminate the worker
+      // The decoder will send back decoded data automatically
     });
   }
 
-  destroy() {
-    if (this.encoder) {
+  destroy(): void {
+    console.log('[OpusRecorderService] Destroying...');
+    
+    if (this.recorder) {
       try {
-        if (this.encoder.stop) {
-          this.encoder.stop();
-        }
-        if (this.encoder.close) {
-          this.encoder.close();
-        }
+        this.recorder.close();
       } catch (e) {
-        console.error('[OpusRecorderService] Error stopping encoder:', e);
+        console.error('[OpusRecorderService] Error closing recorder:', e);
       }
-      this.encoder = null;
+      this.recorder = null;
     }
-    if (this.decoder) {
-      this.decoder.postMessage({ command: 'close' });
-      this.decoder.terminate();
-      this.decoder = null;
+    
+    if (this.decoderWorker) {
+      this.decoderWorker.terminate();
+      this.decoderWorker = null;
     }
-    if (this.dummyContext) {
-      this.dummyContext.close();
-      this.dummyContext = null;
+    
+    if (this.audioContext) {
+      this.audioContext.close();
+      this.audioContext = null;
     }
-    this.decoderCallbacks.clear();
-    this.collectedData = [];
-  }
-}
-
-// Singleton instance
-let encoderInstance: OpusRecorderService | null = null;
-
-export function getOpusEncoder(): OpusRecorderService {
-  if (!encoderInstance) {
-    encoderInstance = new OpusRecorderService();
-  }
-  return encoderInstance;
-}
-
-export function destroyOpusEncoder() {
-  if (encoderInstance) {
-    encoderInstance.destroy();
-    encoderInstance = null;
+    
+    this.isInitialized = false;
+    this.decoderReady = false;
+    this.encodedChunks = [];
   }
 }

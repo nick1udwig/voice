@@ -1,5 +1,5 @@
 import { BaseVoiceStore } from '../store/base-voice';
-import { OpusStreamEncoder } from './opus-stream-encoder';
+import { OpusRecorderService } from './opus-recorder-service';
 
 interface AudioConfig {
   sampleRate: number;
@@ -84,7 +84,7 @@ export class AudioServiceV2 {
   private audioWorkletNode: AudioWorkletNode | null = null;
   private analyserNode: AnalyserNode | null = null;
   private sequenceNumber: number = 0;
-  private opusEncoder: OpusStreamEncoder | null = null;
+  private opusEncoder: OpusRecorderService | null = null;
 
   // Remove host-side mixing - server handles mix-minus now
 
@@ -129,11 +129,11 @@ export class AudioServiceV2 {
     // Initialize opus encoder after audio setup
     try {
       console.log('[AudioService] Waiting for Opus encoder to initialize...');
-      this.opusEncoder = new OpusStreamEncoder({
+      this.opusEncoder = new OpusRecorderService();
+      await this.opusEncoder.initialize({
         sampleRate: this.config.sampleRate,
         channels: this.config.channels
       });
-      await this.opusEncoder.initialize();
       console.log('[AudioService] Opus codec ready');
     } catch (error) {
       console.error('[AudioService] Failed to initialize Opus codec:', error);
@@ -303,20 +303,9 @@ export class AudioServiceV2 {
       throw new Error('Opus encoder not initialized');
     }
     
-    try {
-      const encoded = await this.opusEncoder.encode(float32);
-      console.log('[AudioService] Encoded audio:', float32.length, 'samples to', encoded.length, 'bytes');
-      // Re-initialize encoder for next use since 'done' terminates the worker
-      await this.opusEncoder.reinitialize();
-      return encoded.buffer;
-    } catch (error) {
-      console.error('[AudioService] Encode error, reinitializing:', error);
-      // Try to reinitialize and retry once
-      await this.opusEncoder.reinitialize();
-      const encoded = await this.opusEncoder.encode(float32);
-      await this.opusEncoder.reinitialize();
-      return encoded.buffer;
-    }
+    const encoded = await this.opusEncoder.encode(float32);
+    console.log('[AudioService] Encoded audio:', float32.length, 'samples to', encoded.length, 'bytes');
+    return encoded.buffer;
   }
 
   private arrayBufferToBase64(buffer: ArrayBuffer): string {
@@ -350,18 +339,8 @@ export class AudioServiceV2 {
       throw new Error('Opus decoder not available');
     }
     
-    try {
-      float32Data = await this.opusEncoder.decode(opusData);
-      console.log('[AudioService] Decoded audio:', opusData.length, 'bytes to', float32Data.length, 'samples');
-      // Re-initialize decoder for next use
-      await this.opusEncoder.reinitialize();
-    } catch (error) {
-      console.error('[AudioService] Decode error, reinitializing:', error);
-      // Try to reinitialize and retry once
-      await this.opusEncoder.reinitialize();
-      float32Data = await this.opusEncoder.decode(opusData);
-      await this.opusEncoder.reinitialize();
-    }
+    float32Data = await this.opusEncoder.decode(opusData);
+    console.log('[AudioService] Decoded audio:', opusData.length, 'bytes to', float32Data.length, 'samples');
 
     // Convert Float32Array back to ArrayBuffer for compatibility
     const int16 = new Int16Array(float32Data.length);
