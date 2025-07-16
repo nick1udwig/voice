@@ -112,6 +112,12 @@ impl AudioProcessor {
     pub fn decode_audio(&mut self, participant_id: &str, opus_data: &[u8]) -> Result<Vec<f32>, String> {
         println!("AudioProcessor: decode_audio for {} with {} bytes", participant_id, opus_data.len());
         
+        // Check if this is Ogg-wrapped Opus data
+        if opus_data.len() >= 4 && &opus_data[0..4] == b"OggS" {
+            println!("AudioProcessor: Received Ogg-wrapped Opus data, extracting frames...");
+            return self.decode_ogg_opus(participant_id, opus_data);
+        }
+        
         // Check for and strip header if present
         let (actual_opus_data, _is_simple_format) = if opus_data.len() >= 4 && opus_data[0] == 0x4F {
             if opus_data[1] == 0x50 {
@@ -174,14 +180,127 @@ impl AudioProcessor {
                 }
                 Err(e) => {
                     eprintln!("Opus decode error for participant {}: {}", participant_id, e);
-                    // Return silence on error
-                    Ok(vec![0.0; FRAME_SIZE])
+                    // Return error instead of silence to avoid hiding issues
+                    Err(format!("Opus decode failed: {}", e))
                 }
             }
         } else {
             println!("AudioProcessor: No decoder found for participant {}", participant_id);
             Err(format!("No decoder found for participant {}", participant_id))
         }
+    }
+    
+    fn decode_ogg_opus(&mut self, participant_id: &str, ogg_data: &[u8]) -> Result<Vec<f32>, String> {
+        println!("AudioProcessor: Parsing Ogg container, {} bytes", ogg_data.len());
+        
+        // Simple Ogg page parser to extract Opus packets
+        // This is a minimal implementation - in production you'd use a proper Ogg demuxer
+        
+        let mut offset = 0;
+        let mut all_audio = Vec::new();
+        
+        while offset + 27 < ogg_data.len() {
+            // Check for "OggS" magic
+            if &ogg_data[offset..offset+4] != b"OggS" {
+                break;
+            }
+            
+            // Skip to segment table
+            let num_segments = ogg_data[offset + 26] as usize;
+            if offset + 27 + num_segments > ogg_data.len() {
+                break;
+            }
+            
+            // Calculate total page payload size
+            let mut payload_size = 0;
+            for i in 0..num_segments {
+                payload_size += ogg_data[offset + 27 + i] as usize;
+            }
+            
+            let payload_start = offset + 27 + num_segments;
+            if payload_start + payload_size > ogg_data.len() {
+                break;
+            }
+            
+            // Extract payload
+            let payload = &ogg_data[payload_start..payload_start + payload_size];
+            
+            // Skip Opus header pages (they start with "OpusHead" or "OpusTags")
+            if payload.len() >= 8 {
+                if &payload[0..8] == b"OpusHead" || &payload[0..8] == b"OpusTags" {
+                    println!("AudioProcessor: Skipping Opus header page");
+                    offset = payload_start + payload_size;
+                    continue;
+                }
+            }
+            
+            // This should be an Opus audio packet
+            if !payload.is_empty() {
+                println!("AudioProcessor: Found Opus packet, {} bytes", payload.len());
+                
+                // Decode this Opus packet
+                if let Some(decoder) = self.decoders.get_mut(participant_id) {
+                    let mut output = vec![0i16; FRAME_SIZE * 2]; // Extra space for safety
+                    
+                    match decoder.decode(payload, &mut output, false) {
+                        Ok(samples_decoded) => {
+                            println!("AudioProcessor: Decoded {} samples from Ogg packet", samples_decoded);
+                            
+                            // Convert to f32 and append
+                            for i in 0..samples_decoded {
+                                let sample = output[i] as f32 / 32768.0;
+                                all_audio.push(sample);
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to decode Opus packet from Ogg: {}", e);
+                            // Continue with next packet instead of failing completely
+                        }
+                    }
+                }
+            }
+            
+            offset = payload_start + payload_size;
+        }
+        
+        // Store raw data for later use
+        if let Some(raw_audio) = self.participant_audio_raw.get_mut(participant_id) {
+            // For now, store the original Ogg data
+            *raw_audio = ogg_data.to_vec();
+        }
+        
+        if all_audio.is_empty() {
+            println!("AudioProcessor: No audio decoded from Ogg container");
+            // Try to decode as raw Opus if Ogg parsing failed
+            println!("AudioProcessor: Attempting to decode as raw Opus...");
+            if let Some(decoder) = self.decoders.get_mut(participant_id) {
+                let mut output = vec![0i16; FRAME_SIZE];
+                match decoder.decode(ogg_data, &mut output, false) {
+                    Ok(samples) => {
+                        let mut float_output = Vec::with_capacity(samples);
+                        for i in 0..samples {
+                            float_output.push(output[i] as f32 / 32768.0);
+                        }
+                        while float_output.len() < FRAME_SIZE {
+                            float_output.push(0.0);
+                        }
+                        return Ok(float_output);
+                    }
+                    Err(_) => {
+                        return Ok(vec![0.0; FRAME_SIZE]);
+                    }
+                }
+            }
+            return Ok(vec![0.0; FRAME_SIZE]);
+        }
+        
+        // Take only the first frame worth of samples
+        let mut result = vec![0.0; FRAME_SIZE];
+        let copy_len = all_audio.len().min(FRAME_SIZE);
+        result[..copy_len].copy_from_slice(&all_audio[..copy_len]);
+        
+        println!("AudioProcessor: Returning {} samples from Ogg decode", result.len());
+        Ok(result)
     }
     
     pub fn update_participant_audio(&mut self, participant_id: &str, audio: Vec<f32>) {
@@ -319,6 +438,11 @@ impl AudioProcessor {
     }
     
     fn add_opus_header(opus_data: &[u8]) -> Vec<u8> {
+        // For Ogg-wrapped data, just pass it through without adding custom headers
+        if opus_data.len() >= 4 && &opus_data[0..4] == b"OggS" {
+            return opus_data.to_vec();
+        }
+        
         let mut with_header = Vec::with_capacity(opus_data.len() + 4);
         with_header.push(0x4F); // 'O'
         with_header.push(0x52); // 'R' for opus-recorder

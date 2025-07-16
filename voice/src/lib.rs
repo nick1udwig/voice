@@ -736,7 +736,10 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
                         }
                     }
                     Err(e) => {
-                        kiprintln!("Failed to decode audio: {}", e);
+                        kiprintln!("Failed to decode audio from {}: {}", participant_id, e);
+                        // Send error to the participant but don't crash
+                        send_error_to_channel(channel_id, &format!("Audio decode error: {}", e));
+                        return;
                     }
                 }
             };
