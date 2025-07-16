@@ -13,7 +13,7 @@ interface AudioConfig {
 interface AudioPacket {
   sequenceNumber: number;
   timestamp: number;
-  data: ArrayBuffer;
+  data: Float32Array;
 }
 
 class JitterBuffer {
@@ -236,23 +236,21 @@ export class AudioServiceV3 {
     try {
       float32Data = await this.opusService.decode(opusData);
       console.log('[AudioService] Decoded audio:', opusData.length, 'bytes to', float32Data.length, 'samples');
+      
+      // Check if we have actual audio
+      const hasAudio = float32Data.some(sample => Math.abs(sample) > 0.001);
+      if (!hasAudio) {
+        console.warn('[AudioService] Decoded audio appears to be silent');
+      }
     } catch (error) {
       console.error('[AudioService] Failed to decode audio:', error);
       return;
     }
 
-    // Convert Float32Array back to ArrayBuffer for compatibility
-    const int16 = new Int16Array(float32Data.length);
-    for (let i = 0; i < float32Data.length; i++) {
-      const sample = Math.max(-1, Math.min(1, float32Data[i]));
-      int16[i] = sample * 0x7FFF;
-    }
-    const decodedData = int16.buffer;
-
     const packet: AudioPacket = {
       sequenceNumber: audioData.sequence || 0,
       timestamp: audioData.timestamp || Date.now(),
-      data: decodedData
+      data: float32Data
     };
     
     if (!this.playbackContext) {
@@ -328,29 +326,27 @@ export class AudioServiceV3 {
     }
 
     try {
-      // Decode and play audio
-      const int16 = new Int16Array(packet.data);
-      const float32 = new Float32Array(int16.length);
-      for (let i = 0; i < int16.length; i++) {
-        float32[i] = int16[i] / 0x7FFF;
-      }
+      // Use float32 data directly
+      const float32Data = packet.data;
 
       // Check if we have any non-zero samples
-      const hasAudio = float32.some(sample => sample !== 0);
+      const hasAudio = float32Data.some(sample => Math.abs(sample) > 0.001);
+      const maxAmplitude = Math.max(...float32Data.map(Math.abs));
       const expectedSamples = Math.floor(this.config.sampleRate * this.config.frameDuration / 1000);
       if (packet.sequenceNumber % 10 === 0) {
         console.log('[AudioService] Playing packet seq:', packet.sequenceNumber,
-          'samples:', float32.length,
+          'samples:', float32Data.length,
           'expected:', expectedSamples,
-          'hasAudio:', hasAudio);
+          'hasAudio:', hasAudio,
+          'maxAmplitude:', maxAmplitude);
       }
 
       const audioBuffer = this.playbackContext.createBuffer(
         1,
-        float32.length,
+        float32Data.length,
         this.config.sampleRate
       );
-      audioBuffer.copyToChannel(float32, 0);
+      audioBuffer.copyToChannel(float32Data, 0);
 
       // Get current audio context time
       const currentTime = this.playbackContext.currentTime;

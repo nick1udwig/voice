@@ -44,6 +44,10 @@ pub struct AudioProcessor {
     
     // Voice activity detection per participant
     vad_detectors: HashMap<String, VoiceActivityDetector>,
+    
+    // Track if we've sent Ogg headers for each output
+    headers_sent: HashMap<String, bool>,
+    granule_positions: HashMap<String, u64>,
 }
 
 impl AudioProcessor {
@@ -68,6 +72,8 @@ impl AudioProcessor {
             packet_loss: HashMap::new(),
             jitter_ms: HashMap::new(),
             vad_detectors: HashMap::new(),
+            headers_sent: HashMap::new(),
+            granule_positions: HashMap::new(),
         }
     }
     
@@ -108,6 +114,8 @@ impl AudioProcessor {
         self.packet_loss.remove(participant_id);
         self.jitter_ms.remove(participant_id);
         self.vad_detectors.remove(participant_id);
+        self.headers_sent.remove(participant_id);
+        self.granule_positions.remove(participant_id);
     }
     
     pub fn decode_audio(&mut self, participant_id: &str, opus_data: &[u8]) -> Result<Vec<f32>, String> {
@@ -378,8 +386,9 @@ impl AudioProcessor {
                 match encoder.encode(&i16_buffer, &mut opus_output) {
                     Ok(bytes_written) => {
                         opus_output.truncate(bytes_written);
-                        // Wrap in Ogg container
-                        let ogg_data = Self::create_ogg_opus(&opus_output, true, FRAME_SIZE as u64);
+                        
+                        // Create a minimal Ogg stream with just this frame
+                        let ogg_data = Self::create_minimal_ogg_opus(&opus_output);
                         outputs.insert("__listener__".to_string(), ogg_data);
                     }
                     Err(e) => {
@@ -423,8 +432,9 @@ impl AudioProcessor {
                     match encoder.encode(&i16_buffer, &mut opus_output) {
                         Ok(bytes_written) => {
                             opus_output.truncate(bytes_written);
-                            // Wrap in Ogg container
-                            let ogg_data = Self::create_ogg_opus(&opus_output, true, FRAME_SIZE as u64);
+                            
+                            // Create a minimal Ogg stream with just this frame
+                            let ogg_data = Self::create_minimal_ogg_opus(&opus_output);
                             outputs.insert(target_id.clone(), ogg_data);
                         }
                         Err(e) => {
@@ -505,6 +515,44 @@ impl AudioProcessor {
         tags.extend_from_slice(&0u32.to_le_bytes());
         
         tags
+    }
+    
+    fn create_minimal_ogg_opus(opus_frame: &[u8]) -> Vec<u8> {
+        let mut output = Vec::new();
+        
+        // Create packet writer for the complete Ogg stream
+        let mut packet_writer = PacketWriter::new(&mut output);
+        
+        // Write OpusHead packet
+        let opus_head = Self::create_opus_head();
+        packet_writer.write_packet(
+            &opus_head,
+            0xdeadbeef,
+            PacketWriteEndInfo::EndPage,
+            0,
+        ).unwrap_or_else(|e| eprintln!("Failed to write OpusHead: {}", e));
+        
+        // Write OpusTags packet
+        let opus_tags = Self::create_opus_tags();
+        packet_writer.write_packet(
+            &opus_tags,
+            0xdeadbeef,
+            PacketWriteEndInfo::EndPage,
+            0,
+        ).unwrap_or_else(|e| eprintln!("Failed to write OpusTags: {}", e));
+        
+        // Write the actual Opus frame
+        packet_writer.write_packet(
+            opus_frame,
+            0xdeadbeef,
+            PacketWriteEndInfo::EndStream, // Mark as end of stream
+            FRAME_SIZE as u64,
+        ).unwrap_or_else(|e| eprintln!("Failed to write Opus packet: {}", e));
+        
+        // Let packet_writer go out of scope to ensure everything is flushed
+        drop(packet_writer);
+        
+        output
     }
     
     fn decode_simple_pcm(&mut self, participant_id: &str, pcm_data: &[u8], original_size: usize) -> Result<Vec<f32>, String> {
@@ -706,6 +754,7 @@ impl std::fmt::Debug for AudioProcessor {
             .field("decoders_count", &self.decoders.len())
             .field("encoder_available", &self.encoder.is_some())
             .field("master_mix_len", &self.master_mix.len())
+            .field("headers_sent", &self.headers_sent.len())
             .finish()
     }
 }

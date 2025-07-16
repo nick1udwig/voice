@@ -100,46 +100,64 @@ export class ContinuousOpusService {
     }
   }
 
-  // Decoder functionality
+  // Decoder functionality - create new worker for each decode like the example
   async decode(opusData: Uint8Array): Promise<Float32Array> {
     return new Promise((resolve, reject) => {
-      const decoder = new Worker('/voice:voice:sys/decoderWorker.min.js');
+      // Create a new decoder worker for each decode operation like the example
+      const decoderWorker = new Worker('/voice:voice:sys/decoderWorker.min.js');
       
-      let resolved = false;
+      let decoded = false;
+      const output: Float32Array[] = [];
       
-      decoder.onmessage = (e) => {
+      decoderWorker.onmessage = (e) => {
         if (e.data === null) {
-          // Decoder finished
-          decoder.terminate();
-        } else if (Array.isArray(e.data) && e.data.length > 0 && !resolved) {
-          // Got decoded data
-          resolved = true;
-          resolve(e.data[0]); // Return first channel
-          decoder.terminate();
+          // Decoder finished - combine all output
+          if (!decoded && output.length > 0) {
+            decoded = true;
+            // Concatenate all output buffers
+            let totalLength = 0;
+            for (const buffer of output) {
+              totalLength += buffer.length;
+            }
+            const combined = new Float32Array(totalLength);
+            let offset = 0;
+            for (const buffer of output) {
+              combined.set(buffer, offset);
+              offset += buffer.length;
+            }
+            // Return just the first frame (960 samples)
+            const result = combined.slice(0, 960);
+            resolve(result);
+          }
+          decoderWorker.terminate();
+        } else if (Array.isArray(e.data) && e.data.length > 0) {
+          // Got decoded data - store it
+          output.push(e.data[0]);
         }
       };
 
-      decoder.onerror = (error) => {
+      decoderWorker.onerror = (error) => {
         console.error('[ContinuousOpusService] Decoder error:', error);
         reject(error);
-        decoder.terminate();
+        decoderWorker.terminate();
       };
 
-      // Initialize decoder
-      decoder.postMessage({
+      // Initialize decoder like the example (without bufferLength)
+      decoderWorker.postMessage({
         command: 'init',
         decoderSampleRate: 48000,
         outputBufferSampleRate: 48000
       });
 
       // Decode the data
-      decoder.postMessage({
+      const dataToSend = new Uint8Array(opusData);
+      decoderWorker.postMessage({
         command: 'decode',
-        pages: opusData
-      });
+        pages: dataToSend
+      }, [dataToSend.buffer]);
 
-      // Signal end of data
-      decoder.postMessage({
+      // Signal done
+      decoderWorker.postMessage({
         command: 'done'
       });
     });
