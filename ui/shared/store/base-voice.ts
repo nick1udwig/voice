@@ -1,11 +1,12 @@
 import { CallInfo, ParticipantInfo, ChatMessage, Role } from '../../../target/ui/caller-utils';
-import { AudioServiceV2 } from '../services/audio-service-v2';
+import { AudioServiceV3 } from '../services/audio-service-v3';
 
 export interface BaseVoiceState {
   // Connection state
   wsConnection: WebSocket | null;
   connectionStatus: 'disconnected' | 'connecting' | 'connected';
   isNodeConnection: boolean;
+  isAuthenticated: boolean;
 
   // Call state
   currentCall: CallInfo | null;
@@ -16,10 +17,12 @@ export interface BaseVoiceState {
 
   // Audio state
   localStream: MediaStream | null;
+  setMediaStream: (stream: MediaStream | null) => void;
+  getMediaStream: () => MediaStream | null;
   isMuted: boolean;
 
   // Audio service
-  audioService: AudioServiceV2 | null;
+  audioService: AudioServiceV3 | null;
   audioLevels: Map<string, number>;
   speakingStates: Map<string, boolean>;
 }
@@ -42,10 +45,14 @@ export interface BaseVoiceActions {
 export type BaseVoiceStore = BaseVoiceState & BaseVoiceActions;
 
 export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
+  // Helper methods for media stream
+  setMediaStream: (stream: MediaStream | null) => set({ localStream: stream }),
+  getMediaStream: () => get().localStream,
   // Initial state
   wsConnection: null,
   connectionStatus: 'disconnected',
   isNodeConnection: false,
+  isAuthenticated: false,
   currentCall: null,
   participants: new Map(),
   chatMessages: [],
@@ -80,6 +87,12 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
           connectionStatus: 'connected',
           isNodeConnection: !!nodeAuthToken
         });
+        
+        // Update audio service with the connected WebSocket
+        const audioService = get().audioService;
+        if (audioService) {
+          audioService.setWebSocket(ws);
+        }
 
         console.log(`joining with auth token ${nodeAuthToken}`);
         // Send JoinCall message with optional auth token
@@ -110,7 +123,7 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
 
       ws.onclose = () => {
         console.log('WebSocket disconnected');
-        set({ wsConnection: null, connectionStatus: 'disconnected' });
+        set({ wsConnection: null, connectionStatus: 'disconnected', isAuthenticated: false });
       };
 
       set({ wsConnection: ws, connectionStatus: 'connecting' });
@@ -216,6 +229,7 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
 
     // Special handling for ui-call JoinSuccess message
     if (message.JoinSuccess) {
+      console.log('[VoiceStore] Received JoinSuccess, marking as authenticated');
       const { participantId, role, participants, chatHistory, authToken, hostId } = message.JoinSuccess;
       const participantsMap = new Map();
       participants.forEach((p: ParticipantInfo) => {
@@ -230,12 +244,16 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
       // Get call ID from the JoinCall message we sent (stored in closure or from URL)
       const callId = window.location.pathname.split('/').pop() || '';
 
+      // Set initial mute state - everyone starts muted
+      
       set({
         myParticipantId: participantId,
         myRole: role,
         participants: participantsMap,
         chatMessages: chatHistory || [],
         hostId: hostId || null,
+        isMuted: true, // Everyone starts muted
+        isAuthenticated: true, // Mark as authenticated after JoinSuccess
         currentCall: {
           id: callId,
           createdAt: Date.now(),
@@ -306,6 +324,12 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
     ws.onopen = () => {
       console.log('WebSocket connected');
       set({ wsConnection: ws, connectionStatus: 'connected' });
+      
+      // Update audio service with the connected WebSocket
+      const audioService = get().audioService;
+      if (audioService) {
+        audioService.setWebSocket(ws);
+      }
     };
 
     ws.onmessage = (event) => {
@@ -367,6 +391,7 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
     set({
       wsConnection: null,
       connectionStatus: 'disconnected',
+      isAuthenticated: false,
       currentCall: null,
       participants: new Map(),
       chatMessages: [],
@@ -379,9 +404,15 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
     console.log('[VoiceStore] Initialize audio called');
     const store = get();
     if (!store.audioService) {
-      // Pass a bound getter function so audio service can access current state
-      const audioService = new AudioServiceV2(() => get());
+      // Pass a getter function to audio service so it always gets fresh state
+      const audioService = new AudioServiceV3(get);
       set({ audioService });
+      
+      // Set the WebSocket on the audio service
+      const ws = get().wsConnection;
+      if (ws) {
+        audioService.setWebSocket(ws);
+      }
 
       // Initialize audio based on role
       const myRole = store.myRole;

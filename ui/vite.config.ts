@@ -32,25 +32,29 @@ const copyWorkersPlugin = () => {
       // During dev, copy to public
       try {
         mkdirSync(resolve('public'), { recursive: true });
-        copyFileSync(resolve('shared/workers/audio-encoder.js'), resolve('public/audio-encoder.js'));
-        copyFileSync(resolve('shared/workers/audio-decoder.js'), resolve('public/audio-decoder.js'));
-        console.log('Copied worker files to public directory');
+        console.log('Public directory ready');
       } catch (err) {
-        console.error('Error copying worker files:', err);
+        console.error('Error creating public directory:', err);
       }
     },
     writeBundle() {
       // After build, copy to dist
       try {
-        copyFileSync(resolve('shared/workers/audio-encoder.js'), resolve('dist/audio-encoder.js'));
-        copyFileSync(resolve('shared/workers/audio-decoder.js'), resolve('dist/audio-decoder.js'));
-        copyFileSync(resolve('public/audio-processor.js'), resolve('dist/audio-processor.js'));
-        copyFileSync(resolve('public/encoderWorker.min.js'), resolve('dist/encoderWorker.min.js'));
-        copyFileSync(resolve('public/decoderWorker.min.js'), resolve('dist/decoderWorker.min.js'));
-        copyFileSync(resolve('public/decoderWorker.min.wasm'), resolve('dist/decoderWorker.min.wasm'));
-        copyFileSync(resolve('public/opus-worker-encoder.js'), resolve('dist/opus-worker-encoder.js'));
-        copyFileSync(resolve('public/opus-worker-decoder.js'), resolve('dist/opus-worker-decoder.js'));
-        console.log('Copied worker files to dist directory');
+        // Copy only files that exist
+        const filesToCopy = [
+          ['public/encoderWorker.min.js', 'dist/encoderWorker.min.js'],
+          ['public/decoderWorker.min.js', 'dist/decoderWorker.min.js'],
+          ['public/decoderWorker.min.wasm', 'dist/decoderWorker.min.wasm']
+        ];
+        
+        for (const [src, dest] of filesToCopy) {
+          try {
+            copyFileSync(resolve(src), resolve(dest));
+            console.log(`Copied ${src} to ${dest}`);
+          } catch (err) {
+            console.warn(`Skipping ${src}:`, err.message);
+          }
+        }
       } catch (err) {
         console.error('Error copying worker files:', err);
       }

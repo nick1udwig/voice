@@ -46,3 +46,13 @@ declare module 'opus-recorder' {
   
   export = Recorder;
 }
+
+declare module 'opus-recorder/dist/encoderWorker.min.js' {
+  const encoderPath: string;
+  export default encoderPath;
+}
+
+declare module 'opus-recorder/dist/decoderWorker.min.js' {
+  const decoderPath: string;
+  export default decoderPath;
+}
