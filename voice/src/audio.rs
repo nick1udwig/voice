@@ -2,6 +2,7 @@ use std::collections::{HashMap, BTreeMap};
 use std::time::Instant;
 use ringbuf::{HeapRb, HeapProducer, HeapConsumer};
 use opus::{Decoder, Encoder, Channels, Application};
+use ogg::{PacketWriter, PacketWriteEndInfo};
 
 const SAMPLE_RATE: u32 = 48000;
 const CHANNELS: u32 = 1;
@@ -377,9 +378,9 @@ impl AudioProcessor {
                 match encoder.encode(&i16_buffer, &mut opus_output) {
                     Ok(bytes_written) => {
                         opus_output.truncate(bytes_written);
-                        // Add header for frontend
-                        let with_header = Self::add_opus_header(&opus_output);
-                        outputs.insert("__listener__".to_string(), with_header);
+                        // Wrap in Ogg container
+                        let ogg_data = Self::create_ogg_opus(&opus_output, true, FRAME_SIZE as u64);
+                        outputs.insert("__listener__".to_string(), ogg_data);
                     }
                     Err(e) => {
                         eprintln!("Failed to encode listener mix: {}", e);
@@ -422,9 +423,9 @@ impl AudioProcessor {
                     match encoder.encode(&i16_buffer, &mut opus_output) {
                         Ok(bytes_written) => {
                             opus_output.truncate(bytes_written);
-                            // Add header for frontend
-                            let with_header = Self::add_opus_header(&opus_output);
-                            outputs.insert(target_id.clone(), with_header);
+                            // Wrap in Ogg container
+                            let ogg_data = Self::create_ogg_opus(&opus_output, true, FRAME_SIZE as u64);
+                            outputs.insert(target_id.clone(), ogg_data);
                         }
                         Err(e) => {
                             eprintln!("Failed to encode mix-minus for {}: {}", target_id, e);
@@ -437,19 +438,73 @@ impl AudioProcessor {
         outputs
     }
     
-    fn add_opus_header(opus_data: &[u8]) -> Vec<u8> {
-        // For Ogg-wrapped data, just pass it through without adding custom headers
-        if opus_data.len() >= 4 && &opus_data[0..4] == b"OggS" {
-            return opus_data.to_vec();
+    fn create_ogg_opus(opus_frame: &[u8], is_first_packet: bool, granule_pos: u64) -> Vec<u8> {
+        let mut output = Vec::new();
+        
+        if is_first_packet {
+            // Create packet writer in a scope to avoid lifetime issues
+            {
+                let mut packet_writer = PacketWriter::new(&mut output);
+                
+                // Create OpusHead packet for the first packet
+                let opus_head = Self::create_opus_head();
+                packet_writer.write_packet(
+                    &opus_head,
+                    0xdeadbeef, // serial number
+                    PacketWriteEndInfo::EndPage,
+                    0,
+                ).unwrap_or_else(|e| eprintln!("Failed to write OpusHead: {}", e));
+                
+                // Create OpusTags packet  
+                let opus_tags = Self::create_opus_tags();
+                packet_writer.write_packet(
+                    &opus_tags,
+                    0xdeadbeef,
+                    PacketWriteEndInfo::EndPage,
+                    0,
+                ).unwrap_or_else(|e| eprintln!("Failed to write OpusTags: {}", e));
+            }
         }
         
-        let mut with_header = Vec::with_capacity(opus_data.len() + 4);
-        with_header.push(0x4F); // 'O'
-        with_header.push(0x52); // 'R' for opus-recorder
-        with_header.push((opus_data.len() >> 8) as u8);
-        with_header.push(opus_data.len() as u8);
-        with_header.extend_from_slice(opus_data);
-        with_header
+        // Create a new packet writer for the actual Opus frame
+        {
+            let mut packet_writer = PacketWriter::new(&mut output);
+            packet_writer.write_packet(
+                opus_frame,
+                0xdeadbeef,
+                PacketWriteEndInfo::EndPage,
+                granule_pos,
+            ).unwrap_or_else(|e| eprintln!("Failed to write Opus packet: {}", e));
+        }
+        
+        output
+    }
+    
+    fn create_opus_head() -> Vec<u8> {
+        let mut head = Vec::new();
+        head.extend_from_slice(b"OpusHead"); // Magic signature
+        head.push(1); // Version
+        head.push(1); // Channel count (mono)
+        head.extend_from_slice(&48u16.to_le_bytes()); // Pre-skip
+        head.extend_from_slice(&48000u32.to_le_bytes()); // Sample rate
+        head.extend_from_slice(&0u16.to_le_bytes()); // Output gain
+        head.push(0); // Channel mapping family
+        head
+    }
+    
+    fn create_opus_tags() -> Vec<u8> {
+        let mut tags = Vec::new();
+        tags.extend_from_slice(b"OpusTags"); // Magic signature
+        
+        // Vendor string
+        let vendor = b"voice-server";
+        tags.extend_from_slice(&(vendor.len() as u32).to_le_bytes());
+        tags.extend_from_slice(vendor);
+        
+        // Number of comments (0)
+        tags.extend_from_slice(&0u32.to_le_bytes());
+        
+        tags
     }
     
     fn decode_simple_pcm(&mut self, participant_id: &str, pcm_data: &[u8], original_size: usize) -> Result<Vec<f32>, String> {
