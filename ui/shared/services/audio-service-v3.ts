@@ -113,6 +113,11 @@ export class AudioServiceV3 {
   async initializeAudio(role: string, participantId: string, isHost: boolean): Promise<void> {
     console.log('[AudioService] Initializing audio:', { role, participantId });
     
+    // Initialize opus service for all users (needed for decoding)
+    console.log('[AudioService] Initializing opus service');
+    this.opusService = new ContinuousOpusService();
+    await this.opusService.initialize();
+    
     const canSpeak = ['Speaker', 'Admin'].includes(role);
     
     if (canSpeak) {
@@ -133,9 +138,9 @@ export class AudioServiceV3 {
     try {
       console.log('[AudioService] Setting up audio capture');
 
-      // Initialize opus service
-      this.opusService = new ContinuousOpusService();
-      await this.opusService.initialize();
+      if (!this.opusService) {
+        throw new Error('Opus service not initialized');
+      }
       
       // Set up callback for encoded data
       this.opusService.setOnDataCallback((data: Uint8Array) => {
