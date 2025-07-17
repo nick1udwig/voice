@@ -38,6 +38,7 @@ export const CallScreen: React.FC<CallScreenProps> = ({
   const [message, setMessage] = useState('');
   const [audioResumed, setAudioResumed] = useState(false);
   const [roleMenuOpen, setRoleMenuOpen] = useState<string | null>(null);
+  const [showCopySuccess, setShowCopySuccess] = useState(false);
   const menuRef = React.useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -225,18 +226,17 @@ export const CallScreen: React.FC<CallScreenProps> = ({
           </button>
         )}
         {myRole && <span className="my-role">Your Role: {getRoleEmoji(myRole)} {myRole}</span>}
-        {nodeConnected && (
-          <button 
-            onClick={() => {
-              const shareLink = `${window.location.origin}/voice:voice:sys/call/${callId}`;
-              navigator.clipboard.writeText(shareLink);
-              alert('Share link copied to clipboard!');
-            }}
-            className="share-button"
-          >
-            📋 Copy Share Link
-          </button>
-        )}
+        <button 
+          onClick={() => {
+            const shareLink = `${window.location.origin}/voice:voice:sys/call/${callId}`;
+            navigator.clipboard.writeText(shareLink);
+            setShowCopySuccess(true);
+            setTimeout(() => setShowCopySuccess(false), 3000);
+          }}
+          className="share-button"
+        >
+          {showCopySuccess ? '✓ Copied!' : '📋 Copy Share Link'}
+        </button>
       </div>
     </div>
   );
