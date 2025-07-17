@@ -435,33 +435,36 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
   initializeAudio: () => {
     console.log('[VoiceStore] Initialize audio called');
     const store = get();
-    if (!store.audioService) {
+    
+    // Create audio service if it doesn't exist
+    let audioService = store.audioService;
+    if (!audioService) {
       // Pass a getter function to audio service so it always gets fresh state
-      const audioService = new AudioServiceV3(get);
+      audioService = new AudioServiceV3(get);
       set({ audioService });
+    }
 
-      // Initialize audio based on role
-      const myRole = store.myRole;
-      const myParticipantId = store.myParticipantId;
+    // Initialize audio based on role (even if service already exists - needed for role changes)
+    const myRole = store.myRole;
+    const myParticipantId = store.myParticipantId;
 
-      if (myRole && myParticipantId) {
-        const isHost = store.hostId === myParticipantId;
-        console.log('[VoiceStore] Audio init params:', { myRole, myParticipantId, isHost, hostId: store.hostId });
+    if (myRole && myParticipantId && audioService) {
+      const isHost = store.hostId === myParticipantId;
+      console.log('[VoiceStore] Audio init params:', { myRole, myParticipantId, isHost, hostId: store.hostId });
 
-        audioService.initializeAudio(myRole, myParticipantId, isHost)
-          .then(() => {
-            console.log('[VoiceStore] Audio initialized successfully');
-            // Update local stream in store
-            const mediaStream = audioService.getMediaStream();
-            if (mediaStream) {
-              set({ localStream: mediaStream });
-            }
-          })
-          .catch(error => {
-            console.error('[VoiceStore] Failed to initialize audio:', error);
-            // Could show a notification to the user about mic permission failure
-          });
-      }
+      audioService.initializeAudio(myRole, myParticipantId, isHost)
+        .then(() => {
+          console.log('[VoiceStore] Audio initialized successfully');
+          // Update local stream in store
+          const mediaStream = audioService.getMediaStream();
+          if (mediaStream) {
+            set({ localStream: mediaStream });
+          }
+        })
+        .catch((error: Error) => {
+          console.error('[VoiceStore] Failed to initialize audio:', error);
+          // Could show a notification to the user about mic permission failure
+        });
     }
   },
 
