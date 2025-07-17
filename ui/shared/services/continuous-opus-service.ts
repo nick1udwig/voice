@@ -4,6 +4,8 @@ export class ContinuousOpusService {
   private recorder: Recorder | null = null;
   private onDataCallback?: (data: Uint8Array) => void;
   private isMuted: boolean = true;
+  private decoderWorker: Worker | null = null;
+  private pendingDecodes: Array<{resolve: (data: Float32Array) => void, reject: (err: any) => void}> = [];
 
   constructor() {}
 
@@ -100,67 +102,87 @@ export class ContinuousOpusService {
     }
   }
 
-  // Decoder functionality - create new worker for each decode like the example
-  async decode(opusData: Uint8Array): Promise<Float32Array> {
-    return new Promise((resolve, reject) => {
-      // Create a new decoder worker for each decode operation like the example
-      const decoderWorker = new Worker('/voice:voice:sys/decoderWorker.min.js');
-      
-      let decoded = false;
-      const output: Float32Array[] = [];
-      
-      decoderWorker.onmessage = (e) => {
-        if (e.data === null) {
-          // Decoder finished - combine all output
-          if (!decoded && output.length > 0) {
-            decoded = true;
-            // Concatenate all output buffers
-            let totalLength = 0;
-            for (const buffer of output) {
-              totalLength += buffer.length;
-            }
-            const combined = new Float32Array(totalLength);
-            let offset = 0;
-            for (const buffer of output) {
-              combined.set(buffer, offset);
-              offset += buffer.length;
-            }
-            // Return just the first frame (960 samples)
-            const result = combined.slice(0, 960);
-            resolve(result);
-          }
-          decoderWorker.terminate();
-        } else if (Array.isArray(e.data) && e.data.length > 0) {
-          // Got decoded data - store it
-          output.push(e.data[0]);
+  // Initialize persistent decoder
+  private initDecoder(): void {
+    if (this.decoderWorker) return;
+    
+    console.log('[ContinuousOpusService] Creating persistent decoder worker');
+    this.decoderWorker = new Worker('/voice:voice:sys/decoderWorker.min.js');
+    
+    this.decoderWorker.onmessage = (e) => {
+      if (e.data === null) {
+        // Done signal - ignore for persistent decoder
+        return;
+      } else if (Array.isArray(e.data) && e.data.length > 0) {
+        // Got decoded data
+        const pending = this.pendingDecodes.shift();
+        if (pending) {
+          // Take first channel, limit to 960 samples
+          const data = e.data[0].slice(0, 960);
+          pending.resolve(data);
         }
-      };
+      }
+    };
 
-      decoderWorker.onerror = (error) => {
-        console.error('[ContinuousOpusService] Decoder error:', error);
-        reject(error);
-        decoderWorker.terminate();
-      };
+    this.decoderWorker.onerror = (error) => {
+      console.error('[ContinuousOpusService] Decoder error:', error);
+      const pending = this.pendingDecodes.shift();
+      if (pending) {
+        pending.reject(error);
+      }
+    };
 
-      // Initialize decoder like the example (without bufferLength)
-      decoderWorker.postMessage({
-        command: 'init',
-        decoderSampleRate: 48000,
-        outputBufferSampleRate: 48000
-      });
+    // Initialize once
+    this.decoderWorker.postMessage({
+      command: 'init',
+      decoderSampleRate: 48000,
+      outputBufferSampleRate: 48000,
+      resampleQuality: 3
+    });
+  }
 
-      // Decode the data
+  // Decoder functionality
+  async decode(opusData: Uint8Array): Promise<Float32Array> {
+    // Initialize decoder on first use
+    if (!this.decoderWorker) {
+      this.initDecoder();
+    }
+    
+    return new Promise((resolve, reject) => {
+      // Queue the callback
+      this.pendingDecodes.push({ resolve, reject });
+      
+      // The server sends complete Ogg files, so pass directly to decoder
       const dataToSend = new Uint8Array(opusData);
-      decoderWorker.postMessage({
+      this.decoderWorker!.postMessage({
         command: 'decode',
         pages: dataToSend
       }, [dataToSend.buffer]);
-
-      // Signal done
-      decoderWorker.postMessage({
-        command: 'done'
-      });
     });
+  }
+  
+  private wrapOpusInOgg(opusFrame: Uint8Array): Uint8Array {
+    // Create a minimal Ogg wrapper for a single Opus frame
+    // This is a simplified version - just enough for the decoder
+    const output: number[] = [];
+    
+    // OggS header
+    output.push(0x4F, 0x67, 0x67, 0x53); // "OggS"
+    output.push(0x00); // Version
+    output.push(0x02); // Header type (first page)
+    output.push(0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00); // Granule position
+    output.push(0xDE, 0xAD, 0xBE, 0xEF); // Serial number
+    output.push(0x00, 0x00, 0x00, 0x00); // Page sequence
+    output.push(0x00, 0x00, 0x00, 0x00); // CRC (will be wrong but decoder might not check)
+    output.push(0x01); // Number of segments
+    output.push(opusFrame.length); // Segment length
+    
+    // Add the opus frame
+    for (let i = 0; i < opusFrame.length; i++) {
+      output.push(opusFrame[i]);
+    }
+    
+    return new Uint8Array(output);
   }
 
   async cleanup(): Promise<void> {
@@ -170,6 +192,11 @@ export class ContinuousOpusService {
       await this.recorder.stop().catch(() => {});
       this.recorder.close();
       this.recorder = null;
+    }
+    
+    if (this.decoderWorker) {
+      this.decoderWorker.terminate();
+      this.decoderWorker = null;
     }
   }
 }
