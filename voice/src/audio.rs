@@ -15,6 +15,7 @@ struct OggStreamState {
     page_sequence: u32,
     granule_position: u64,
     headers_sent: bool,
+    serial_number: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -33,7 +34,7 @@ pub struct JitterStats {
 pub struct AudioProcessor {
     // Opus encoder/decoder for each participant
     decoders: HashMap<String, Decoder>,
-    encoder: Option<Encoder>,
+    encoders: HashMap<String, Encoder>, // Per-participant encoders for better quality
     
     // Ring buffers for jitter handling - can't derive Debug
     #[allow(dead_code)]
@@ -44,6 +45,8 @@ pub struct AudioProcessor {
     // Mixing state
     participant_audio_raw: HashMap<String, Vec<u8>>, // Store raw Opus data
     participant_audio: HashMap<String, Vec<f32>>, // Decoded audio for mixing
+    participant_has_sent_audio: HashMap<String, bool>, // Track if participant has ever sent audio
+    participant_last_audio_time: HashMap<String, std::time::Instant>, // Track last audio time
     master_mix: Vec<f32>,
     
     // Audio quality monitoring
@@ -59,28 +62,15 @@ pub struct AudioProcessor {
 
 impl AudioProcessor {
     pub fn new() -> Self {
-        // Create a shared encoder for mix outputs
-        let encoder = match Encoder::new(SAMPLE_RATE, Channels::Mono, Application::Voip) {
-            Ok(mut enc) => {
-                // Set bitrate for better quality
-                if let Err(e) = enc.set_bitrate(opus::Bitrate::Bits(OPUS_BITRATE)) {
-                    eprintln!("Failed to set Opus bitrate: {}", e);
-                }
-                Some(enc)
-            },
-            Err(e) => {
-                eprintln!("Failed to create Opus encoder: {}", e);
-                None
-            }
-        };
-        
         Self {
             decoders: HashMap::new(),
-            encoder,
+            encoders: HashMap::new(),
             input_buffers: HashMap::new(),
             output_buffers: HashMap::new(),
             participant_audio_raw: HashMap::new(),
             participant_audio: HashMap::new(),
+            participant_has_sent_audio: HashMap::new(),
+            participant_last_audio_time: HashMap::new(),
             master_mix: vec![0.0; FRAME_SIZE],
             packet_loss: HashMap::new(),
             jitter_ms: HashMap::new(),
@@ -104,6 +94,20 @@ impl AudioProcessor {
             }
         }
         
+        // Create Opus encoder for this participant's mix-minus output
+        match Encoder::new(SAMPLE_RATE, Channels::Mono, Application::Voip) {
+            Ok(mut encoder) => {
+                // Set bitrate for better quality
+                if let Err(e) = encoder.set_bitrate(opus::Bitrate::Bits(OPUS_BITRATE)) {
+                    eprintln!("Failed to set Opus bitrate: {}", e);
+                }
+                self.encoders.insert(participant_id.clone(), encoder);
+            }
+            Err(e) => {
+                return Err(format!("Failed to create Opus encoder: {}", e));
+            }
+        }
+        
         // Create jitter buffer (100ms capacity)
         let buffer_size = (SAMPLE_RATE as usize * 100) / 1000;
         let (producer, consumer) = HeapRb::<f32>::new(buffer_size).split();
@@ -112,6 +116,8 @@ impl AudioProcessor {
         self.output_buffers.insert(participant_id.clone(), consumer);
         self.participant_audio_raw.insert(participant_id.clone(), Vec::new());
         self.participant_audio.insert(participant_id.clone(), vec![0.0; FRAME_SIZE]);
+        self.participant_has_sent_audio.insert(participant_id.clone(), false);
+        self.participant_last_audio_time.insert(participant_id.clone(), std::time::Instant::now());
         self.vad_detectors.insert(participant_id.clone(), VoiceActivityDetector::new());
         
         Ok(())
@@ -119,10 +125,13 @@ impl AudioProcessor {
     
     pub fn remove_participant(&mut self, participant_id: &str) {
         self.decoders.remove(participant_id);
+        self.encoders.remove(participant_id);
         self.input_buffers.remove(participant_id);
         self.output_buffers.remove(participant_id);
         self.participant_audio_raw.remove(participant_id);
         self.participant_audio.remove(participant_id);
+        self.participant_has_sent_audio.remove(participant_id);
+        self.participant_last_audio_time.remove(participant_id);
         self.packet_loss.remove(participant_id);
         self.jitter_ms.remove(participant_id);
         self.vad_detectors.remove(participant_id);
@@ -131,6 +140,20 @@ impl AudioProcessor {
     
     pub fn decode_audio(&mut self, participant_id: &str, opus_data: &[u8]) -> Result<Vec<f32>, String> {
         println!("AudioProcessor: decode_audio for {} with {} bytes", participant_id, opus_data.len());
+        
+        // Mark that this participant has sent audio
+        if let Some(has_sent) = self.participant_has_sent_audio.get_mut(participant_id) {
+            *has_sent = true;
+        }
+        if let Some(last_time) = self.participant_last_audio_time.get_mut(participant_id) {
+            *last_time = std::time::Instant::now();
+        }
+        
+        // Store the original data as-is for later mix-minus processing
+        if let Some(raw_audio) = self.participant_audio_raw.get_mut(participant_id) {
+            *raw_audio = opus_data.to_vec();
+            println!("AudioProcessor: Stored {} bytes of original audio for {}", opus_data.len(), participant_id);
+        }
         
         // Check if this is Ogg-wrapped Opus data
         if opus_data.len() >= 4 && &opus_data[0..4] == b"OggS" {
@@ -162,13 +185,7 @@ impl AudioProcessor {
             (opus_data, false)
         };
         
-        // Store the raw Opus data (without header)
-        if let Some(raw_audio) = self.participant_audio_raw.get_mut(participant_id) {
-            *raw_audio = actual_opus_data.to_vec();
-            println!("AudioProcessor: Stored {} bytes of raw audio for {}", actual_opus_data.len(), participant_id);
-        } else {
-            println!("AudioProcessor: No raw audio buffer for {}", participant_id);
-        }
+        // Raw data already stored above
         
         // Decode using the participant's decoder
         if let Some(decoder) = self.decoders.get_mut(participant_id) {
@@ -283,11 +300,7 @@ impl AudioProcessor {
             offset = payload_start + payload_size;
         }
         
-        // Store raw data for later use
-        if let Some(raw_audio) = self.participant_audio_raw.get_mut(participant_id) {
-            // For now, store the original Ogg data
-            *raw_audio = ogg_data.to_vec();
-        }
+        // Raw data already stored in decode_audio()
         
         if all_audio.is_empty() {
             println!("AudioProcessor: No audio decoded from Ogg container");
@@ -343,115 +356,90 @@ impl AudioProcessor {
             }).collect::<Vec<_>>()
         );
         
-        // First check who has raw audio data
-        let participants_with_raw_audio: Vec<(String, Vec<u8>)> = self.participant_audio_raw
+        // Get all registered participants (not just those with recent audio)
+        let all_participants: Vec<String> = self.participant_audio.keys().cloned().collect();
+        
+        // Get participants who currently have audio data to contribute to the mix
+        let active_participants: Vec<(String, Vec<u8>, Vec<f32>)> = self.participant_audio_raw
             .iter()
             .filter(|(_, data)| !data.is_empty())
-            .map(|(id, data)| (id.clone(), data.clone()))
-            .collect();
-        
-        println!("AudioProcessor: Participants with raw audio: {:?}", 
-            participants_with_raw_audio.iter().map(|(id, data)| (id, data.len())).collect::<Vec<_>>()
-        );
-        
-        // Now collect decoded audio for those who have raw audio
-        let active_participants: Vec<(String, Vec<f32>)> = participants_with_raw_audio
-            .iter()
-            .filter_map(|(id, _)| {
-                self.participant_audio.get(id).map(|audio| (id.clone(), audio.clone()))
+            .filter_map(|(id, raw_data)| {
+                self.participant_audio.get(id).map(|decoded_audio| {
+                    (id.clone(), raw_data.clone(), decoded_audio.clone())
+                })
             })
             .collect();
+        
+        println!("AudioProcessor: Active participants: {:?}", 
+            active_participants.iter().map(|(id, raw, _)| (id, raw.len())).collect::<Vec<_>>()
+        );
         
         if active_participants.is_empty() {
             // No audio data to process
             return outputs;
         }
         
-        // If we don't have an encoder, return empty
-        if self.encoder.is_none() {
-            eprintln!("No Opus encoder available");
-            return outputs;
-        }
+        // Skip creating a shared listener mix - we'll create individual mixes for each participant
         
-        // Create listener mix - combine all speaker audio
-        if !active_participants.is_empty() {
-            let mut listener_mix = vec![0.0f32; FRAME_SIZE];
-            
-            // Mix all active participants
-            for (_, audio) in &active_participants {
-                for i in 0..FRAME_SIZE.min(audio.len()) {
-                    listener_mix[i] += audio[i];
-                }
-            }
-            
-            // Apply compression to prevent clipping
-            Self::apply_compression_static(&mut listener_mix);
-            
-            // Convert to i16 and encode
-            let i16_buffer: Vec<i16> = listener_mix.iter()
-                .map(|&sample| (sample.max(-1.0).min(1.0) * 32767.0) as i16)
-                .collect();
-            
-            let mut opus_output = vec![0u8; 4000]; // Max Opus frame size
-            if let Some(encoder) = self.encoder.as_mut() {
-                match encoder.encode(&i16_buffer, &mut opus_output) {
-                    Ok(bytes_written) => {
-                        opus_output.truncate(bytes_written);
-                        
-                        // Use streaming Ogg for listener mix
-                        let ogg_data = self.write_to_ogg_stream("__listener__", &opus_output);
-                        outputs.insert("__listener__".to_string(), ogg_data);
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to encode listener mix: {}", e);
-                    }
-                }
-            }
-        }
         
-        // Create mix-minus for each active participant
-        for (target_idx, (target_id, _)) in active_participants.iter().enumerate() {
-            if active_participants.len() == 1 {
-                // Single participant - no audio to send back
+        // Create personalized mix for each registered participant
+        for target_id in &all_participants {
+            // Skip if there's no audio from anyone
+            if active_participants.is_empty() {
                 continue;
             }
             
-            let mut mix_minus = vec![0.0f32; FRAME_SIZE];
+            // Check if this participant has sent audio (i.e., is an active speaker)
+            let is_active_speaker = active_participants.iter().any(|(id, _, _)| id == target_id);
+            
+            let mut mix = vec![0.0f32; FRAME_SIZE];
             let mut has_audio = false;
             
-            // Mix all participants except the target
-            for (idx, (_, audio)) in active_participants.iter().enumerate() {
-                if idx != target_idx {
+            if is_active_speaker {
+                // For active speakers: create mix-minus (exclude their own audio)
+                for (participant_id, _, decoded_audio) in &active_participants {
+                    if participant_id != target_id {
+                        has_audio = true;
+                        for i in 0..FRAME_SIZE.min(decoded_audio.len()) {
+                            mix[i] += decoded_audio[i];
+                        }
+                    }
+                }
+            } else {
+                // For listeners/chatters: create full mix (include all audio)
+                for (_, _, decoded_audio) in &active_participants {
                     has_audio = true;
-                    for i in 0..FRAME_SIZE.min(audio.len()) {
-                        mix_minus[i] += audio[i];
+                    for i in 0..FRAME_SIZE.min(decoded_audio.len()) {
+                        mix[i] += decoded_audio[i];
                     }
                 }
             }
             
             if has_audio {
                 // Apply compression
-                Self::apply_compression_static(&mut mix_minus);
+                Self::apply_compression_static(&mut mix);
                 
                 // Convert to i16 and encode
-                let i16_buffer: Vec<i16> = mix_minus.iter()
+                let i16_buffer: Vec<i16> = mix.iter()
                     .map(|&sample| (sample.max(-1.0).min(1.0) * 32767.0) as i16)
                     .collect();
                 
                 let mut opus_output = vec![0u8; 4000];
-                if let Some(encoder) = self.encoder.as_mut() {
+                if let Some(encoder) = self.encoders.get_mut(target_id) {
                     match encoder.encode(&i16_buffer, &mut opus_output) {
                         Ok(bytes_written) => {
                             opus_output.truncate(bytes_written);
                             
-                            // Use streaming Ogg for mix-minus
+                            // Use streaming Ogg with participant's own stream
                             let ogg_data = self.write_to_ogg_stream(target_id, &opus_output);
                             outputs.insert(target_id.clone(), ogg_data);
                         }
                         Err(e) => {
-                            eprintln!("Failed to encode mix-minus for {}: {}", target_id, e);
+                            eprintln!("Failed to encode mix for {}: {}", target_id, e);
                         }
                     }
+                } else {
+                    eprintln!("No encoder found for participant {}", target_id);
                 }
             }
         }
@@ -460,12 +448,19 @@ impl AudioProcessor {
     }
     
     fn get_or_create_stream(&mut self, stream_id: &str) -> &mut OggStreamState {
+        let stream_count = self.ogg_streams.len() as u32;
         self.ogg_streams.entry(stream_id.to_string()).or_insert_with(|| {
+            // Generate unique serial number based on stream ID hash
+            let serial = stream_id.bytes().fold(0u32, |acc, b| {
+                acc.wrapping_add(b as u32).wrapping_mul(31)
+            }) ^ (stream_count << 16);
+            
             OggStreamState {
                 buffer: Vec::new(),
                 page_sequence: 0,
                 granule_position: 0,
                 headers_sent: false,
+                serial_number: serial,
             }
         })
     }
@@ -485,7 +480,7 @@ impl AudioProcessor {
             let opus_head = Self::create_opus_head();
             packet_writer.write_packet(
                 &opus_head,
-                0xdeadbeef,
+                stream.serial_number,
                 PacketWriteEndInfo::EndPage,
                 0,
             ).unwrap_or_else(|e| eprintln!("Failed to write OpusHead: {}", e));
@@ -494,7 +489,7 @@ impl AudioProcessor {
             let opus_tags = Self::create_opus_tags();
             packet_writer.write_packet(
                 &opus_tags,
-                0xdeadbeef,
+                stream.serial_number,
                 PacketWriteEndInfo::EndPage,
                 0,
             ).unwrap_or_else(|e| eprintln!("Failed to write OpusTags: {}", e));
@@ -503,7 +498,7 @@ impl AudioProcessor {
             stream.granule_position = FRAME_SIZE as u64;
             packet_writer.write_packet(
                 opus_frame,
-                0xdeadbeef,
+                stream.serial_number,
                 PacketWriteEndInfo::EndPage,
                 stream.granule_position,
             ).unwrap_or_else(|e| eprintln!("Failed to write first audio packet: {}", e));
@@ -519,9 +514,10 @@ impl AudioProcessor {
             // Subsequent packets: create continuation page manually
             stream.granule_position += FRAME_SIZE as u64;
             
-            // Create Ogg page manually
+            // Create Ogg page manually with proper serial number
             let page = Self::create_ogg_page(
                 opus_frame,
+                stream.serial_number,
                 stream.page_sequence,
                 stream.granule_position,
                 false, // not first page
@@ -533,7 +529,7 @@ impl AudioProcessor {
         }
     }
     
-    fn create_ogg_page(data: &[u8], sequence: u32, granule_pos: u64, is_first: bool, is_last: bool) -> Vec<u8> {
+    fn create_ogg_page(data: &[u8], serial_number: u32, sequence: u32, granule_pos: u64, is_first: bool, is_last: bool) -> Vec<u8> {
         let mut page = Vec::new();
         
         // OggS magic
@@ -552,7 +548,7 @@ impl AudioProcessor {
         page.extend_from_slice(&granule_pos.to_le_bytes());
         
         // Serial number (4 bytes)
-        page.extend_from_slice(&0xdeadbeef_u32.to_le_bytes());
+        page.extend_from_slice(&serial_number.to_le_bytes());
         
         // Page sequence (4 bytes)
         page.extend_from_slice(&sequence.to_le_bytes());
@@ -827,7 +823,8 @@ impl std::fmt::Debug for AudioProcessor {
         f.debug_struct("AudioProcessor")
             .field("participant_count", &self.participant_audio_raw.len())
             .field("decoders_count", &self.decoders.len())
-            .field("encoder_available", &self.encoder.is_some())
+            .field("encoders_count", &self.encoders.len())
+            .field("participants_sent_audio", &self.participant_has_sent_audio.len())
             .field("master_mix_len", &self.master_mix.len())
             .field("ogg_streams_count", &self.ogg_streams.len())
             .finish()

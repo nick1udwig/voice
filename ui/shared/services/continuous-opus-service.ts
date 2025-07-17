@@ -17,8 +17,20 @@ export class ContinuousOpusService {
 
   async initialize(): Promise<void> {
     console.log('[ContinuousOpusService] Initializing');
+    
+    // Don't create recorder here - let startRecording create it when needed
+    // This ensures fresh recorder instance for permission prompts
+    
+    console.log('[ContinuousOpusService] Initialization complete');
+  }
 
-    // Simple initialization like the example
+  setOnDataCallback(callback: (data: Uint8Array) => void): void {
+    this.onDataCallback = callback;
+  }
+
+  private createRecorder(): void {
+    console.log('[ContinuousOpusService] Creating new recorder instance');
+    
     this.recorder = new Recorder({
       encoderPath: '/voice:voice:sys/encoderWorker.min.js',
       encoderSampleRate: 48000,
@@ -31,7 +43,7 @@ export class ContinuousOpusService {
       recordingGain: 1
     });
 
-    // Set up event handlers like the example
+    // Set up event handlers
     this.recorder.ondataavailable = (typedArray: ArrayBuffer) => {
       const data = new Uint8Array(typedArray);
       console.log('[ContinuousOpusService] Data received:', data.length, 'bytes - muted:', this.isMuted, 'recorder state:', this.recorder?.state);
@@ -55,28 +67,27 @@ export class ContinuousOpusService {
     this.recorder.onresume = () => {
       console.log('[ContinuousOpusService] Recorder is resuming');
     };
-
-    console.log('[ContinuousOpusService] Initialization complete');
-  }
-
-  setOnDataCallback(callback: (data: Uint8Array) => void): void {
-    this.onDataCallback = callback;
   }
 
   async startRecording(): Promise<void> {
+    // If no recorder exists, create one
     if (!this.recorder) {
-      throw new Error('Recorder not initialized');
+      this.createRecorder();
     }
 
     // Check if already recording
-    if (this.recorder.state === 'recording') {
+    if (this.recorder && this.recorder.state === 'recording') {
       console.log('[ContinuousOpusService] Already recording, skipping start');
       return;
     }
 
+    if (!this.recorder) {
+      throw new Error('Failed to create recorder');
+    }
+
     console.log('[ContinuousOpusService] Starting recording, current state:', this.recorder.state);
     
-    // Start recording like the example
+    // Start recording - this will trigger getUserMedia and permission prompt
     await this.recorder.start().catch((e: Error) => {
       console.error('[ContinuousOpusService] Error encountered:', e.message);
       throw e;
@@ -94,29 +105,39 @@ export class ContinuousOpusService {
     
     console.log('[ContinuousOpusService] Stopping recording, current state:', this.recorder.state);
     await this.recorder.stop();
+    
+    // Close and null out the recorder to ensure fresh instance next time
+    try {
+      this.recorder.close();
+    } catch (e) {
+      console.log('[ContinuousOpusService] Error closing recorder:', e);
+    }
+    this.recorder = null;
   }
 
   pauseRecording(): void {
-    if (!this.recorder) return;
+    if (!this.recorder || this.recorder.state !== 'recording') return;
     console.log('[ContinuousOpusService] Pausing recording');
     this.recorder.pause();
   }
 
   resumeRecording(): void {
-    if (!this.recorder) return;
+    if (!this.recorder || this.recorder.state !== 'paused') return;
     console.log('[ContinuousOpusService] Resuming recording');
     this.recorder.resume();
   }
 
   setMuted(muted: boolean): void {
-    console.log('[ContinuousOpusService] Setting muted:', muted);
+    console.log('[ContinuousOpusService] Setting muted:', muted, 'recorder state:', this.recorder?.state);
     this.isMuted = muted;
     
-    // Still try to pause/resume to save resources
-    if (muted) {
-      this.pauseRecording();
-    } else {
-      this.resumeRecording();
+    // Only pause/resume if recorder exists and is actually recording
+    if (this.recorder) {
+      if (muted && this.recorder.state === 'recording') {
+        this.pauseRecording();
+      } else if (!muted && this.recorder.state === 'paused') {
+        this.resumeRecording();
+      }
     }
   }
 
@@ -176,11 +197,13 @@ export class ContinuousOpusService {
   async decode(opusData: Uint8Array, streamId: string = 'default'): Promise<Float32Array> {
     console.log('[ContinuousOpusService] Decoding', opusData.length, 'bytes for stream:', streamId);
     
-    // Get or create decoder state for this stream
-    let state = this.decoderStates.get(streamId);
+    // Use a unified decoder for all incoming streams to handle role changes
+    // This prevents decoder state issues when stream ID changes from "mix-for-X" to "server-mix"
+    const decoderKey = 'unified-decoder';
+    let state = this.decoderStates.get(decoderKey);
     if (!state) {
-      state = this.createDecoderState(streamId);
-      this.decoderStates.set(streamId, state);
+      state = this.createDecoderState(decoderKey);
+      this.decoderStates.set(decoderKey, state);
     }
     
     return new Promise((resolve, reject) => {
@@ -201,8 +224,14 @@ export class ContinuousOpusService {
     console.log('[ContinuousOpusService] Cleaning up');
     
     if (this.recorder) {
-      await this.recorder.stop().catch(() => {});
-      this.recorder.close();
+      try {
+        if (this.recorder.state === 'recording' || this.recorder.state === 'paused') {
+          await this.recorder.stop();
+        }
+        this.recorder.close();
+      } catch (e) {
+        console.log('[ContinuousOpusService] Error during recorder cleanup:', e);
+      }
       this.recorder = null;
     }
     

@@ -89,11 +89,6 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
           isNodeConnection: !!nodeAuthToken
         });
         
-        // Update audio service with the connected WebSocket
-        const audioService = get().audioService;
-        if (audioService) {
-          audioService.setWebSocket(ws);
-        }
 
         console.log(`joining with auth token ${nodeAuthToken}`);
         // Send JoinCall message with optional auth token
@@ -159,8 +154,14 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
       // Update store state FIRST
       set({ isMuted: newMutedState });
 
-      // Then update audio service
-      audioService.toggleMute(newMutedState);
+      // Then update audio service (now async)
+      audioService.toggleMute(newMutedState)
+        .then(() => {
+          console.log('[VoiceStore] Audio service mute toggle completed');
+        })
+        .catch((error: Error) => {
+          console.error('[VoiceStore] Failed to toggle mute in audio service:', error);
+        });
       
       // Verify the state was updated
       const verifyMuted = get().isMuted;
@@ -361,12 +362,6 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
     ws.onopen = () => {
       console.log('WebSocket connected');
       set({ wsConnection: ws, connectionStatus: 'connected' });
-      
-      // Update audio service with the connected WebSocket
-      const audioService = get().audioService;
-      if (audioService) {
-        audioService.setWebSocket(ws);
-      }
     };
 
     ws.onmessage = (event) => {
@@ -444,12 +439,6 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
       // Pass a getter function to audio service so it always gets fresh state
       const audioService = new AudioServiceV3(get);
       set({ audioService });
-      
-      // Set the WebSocket on the audio service
-      const ws = get().wsConnection;
-      if (ws) {
-        audioService.setWebSocket(ws);
-      }
 
       // Initialize audio based on role
       const myRole = store.myRole;

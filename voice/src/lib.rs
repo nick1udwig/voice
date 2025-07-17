@@ -576,6 +576,19 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
 
                 let chat_history = call.chat_history.clone();
 
+                // Add ALL participants to the audio processor so they can receive audio
+                let processor = state.audio_processors.entry(call_id.clone())
+                    .or_insert_with(|| Arc::new(Mutex::new(AudioProcessor::new())))
+                    .clone();
+                
+                if let Ok(mut proc) = processor.lock() {
+                    if let Err(e) = proc.add_participant(participant_id.clone()) {
+                        kiprintln!("Failed to add participant to audio processor on join: {}", e);
+                    } else {
+                        kiprintln!("Added participant {} to audio processor on join (role: {:?})", participant_id, participant.role);
+                    }
+                };
+                
                 // Send join success with host info
                 send_to_channel(channel_id, WsServerMessage::JoinSuccess {
                     participant_id: participant_id.clone(),
@@ -703,40 +716,14 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
                         // Update participant's audio buffer
                         proc.update_participant_audio(&participant_id, decoded_audio);
                         
-                        // Create all mix-minus outputs
+                        // Create personalized outputs for all participants
                         let mixes = proc.create_mix_minus_outputs();
-                        kiprintln!("Created {} mix-minus outputs", mixes.len());
-                        
-                        // Clone listener mix for later use
-                        let listener_mix = mixes.get("__listener__").cloned();
+                        kiprintln!("Created {} personalized outputs", mixes.len());
                         
                         // Send personalized mix to each participant
                         for (target_id, mix_data) in &mixes {
-                            kiprintln!("Processing mix for target: {}, data size: {}", target_id, mix_data.len());
-                            if target_id == "__listener__" {
-                                // Broadcast listener mix to all non-speaking participants
-                                broadcast_to_non_speakers(state, &call_id, mix_data.clone(), sequence, timestamp);
-                            } else {
-                                // Send personalized mix to specific participant
-                                send_audio_to_participant(state, target_id, mix_data.clone(), sequence, timestamp);
-                            }
-                        }
-                        
-                        // Also send appropriate audio to speakers who haven't sent audio yet
-                        if let Some(call) = state.calls.get(&call_id) {
-                            for (pid, participant) in &call.participants {
-                                if matches!(participant.role, Role::Speaker | Role::Admin) {
-                                    // Check if this speaker already got a personalized mix
-                                    if !mixes.contains_key(pid) && pid != &participant_id {
-                                        // This speaker hasn't sent audio yet, send them the listener mix
-                                        // (all active speakers' audio)
-                                        if let Some(ref mix_data) = listener_mix {
-                                            kiprintln!("Sending listener mix to non-active speaker: {}", pid);
-                                            send_audio_to_participant(state, pid, mix_data.clone(), sequence, timestamp);
-                                        }
-                                    }
-                                }
-                            }
+                            kiprintln!("Sending personalized mix to: {}, data size: {}", target_id, mix_data.len());
+                            send_audio_to_participant(state, target_id, mix_data.clone(), sequence, timestamp);
                         }
                     }
                     Err(e) => {
@@ -758,11 +745,13 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
             if let Some(call) = state.calls.get_mut(&call_id) {
                 // Check if target exists
                 if let Some(target_participant) = call.participants.get_mut(&target_id) {
+                    let old_role = target_participant.role.clone();
+                    
                     // Update the role
                     target_participant.role = new_role.clone();
                     
-                    // Role is already updated in the participant data above
-                    // No need to update connection mapping as it only stores participant_id
+                    // Log role change for debugging
+                    kiprintln!("Role updated for participant {}: {:?} -> {:?}", target_id, old_role, new_role);
                     
                     // Broadcast role update to all participants
                     broadcast_to_call(state, &call_id, WsServerMessage::RoleUpdated(
@@ -995,8 +984,11 @@ fn bytes_to_base64(bytes: &[u8]) -> String {
 
 fn send_audio_to_participant(state: &VoiceState, participant_id: &str, audio_data: Vec<u8>, sequence: Option<u32>, timestamp: Option<u64>) {
     if let Some(&channel_id) = state.participant_channels.get(participant_id) {
+        // Use consistent stream ID that the frontend expects
+        // Since frontend now uses unified decoder/buffer, we can use a simple identifier
+        let stream_id = "audio-stream".to_string();
         let message = WsServerMessage::AudioData(WsAudioData {
-            participant_id: participant_id.to_string(),
+            participant_id: stream_id,
             data: bytes_to_base64(&audio_data),
             sequence,
             timestamp,

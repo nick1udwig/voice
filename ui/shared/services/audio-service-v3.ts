@@ -81,9 +81,9 @@ export class AudioServiceV3 {
   private config: AudioConfig;
   private sequenceNumber: number = 0;
   private opusService: ContinuousOpusService | null = null;
-  private ws: WebSocket | null = null;
   private sampleRate: number = 48000;
   private hasLoggedAuthWait: boolean = false;
+  private hasStartedRecording: boolean = false;
 
   // Jitter buffers for incoming audio
   private jitterBuffers: Map<string, JitterBuffer> = new Map();
@@ -106,9 +106,6 @@ export class AudioServiceV3 {
     };
   }
 
-  setWebSocket(ws: WebSocket): void {
-    this.ws = ws;
-  }
 
   async initializeAudio(role: string, participantId: string, isHost: boolean): Promise<void> {
     console.log('[AudioService] Initializing audio:', { role, participantId, hasOpusService: !!this.opusService });
@@ -126,14 +123,22 @@ export class AudioServiceV3 {
     
     if (canSpeak) {
       console.log('[AudioService] User can speak, setting up audio capture');
+      // Reset recording flag when reinitializing for speakers
+      this.hasStartedRecording = false;
+      // Ensure any existing recorder is stopped first (important for role changes)
+      if (this.opusService) {
+        await this.opusService.stopRecording();
+      }
       await this.setupAudioCapture();
     } else {
       console.log('[AudioService] User cannot speak (role:', role, ')');
-      // If we previously could speak, stop recording
+      // Always stop recording for non-speakers to clean up any recorder state
       if (this.opusService) {
-        console.log('[AudioService] Stopping any existing recording');
+        console.log('[AudioService] Ensuring recording is stopped for non-speaker');
         await this.opusService.stopRecording();
       }
+      // Reset recording flag for non-speakers
+      this.hasStartedRecording = false;
     }
     
     // Set up playback only if not already set up
@@ -157,14 +162,17 @@ export class AudioServiceV3 {
       
       // Set up callback for encoded data (safe to call multiple times)
       this.opusService.setOnDataCallback((data: Uint8Array) => {
+        // Always get fresh WebSocket from store
+        const currentWs = this.getStore().wsConnection;
+        
         // Debug log every 10th callback
         if (this.sequenceNumber % 10 === 0) {
-          console.log('[AudioService] Data callback - ws:', !!this.ws, 'wsState:', this.ws?.readyState, 
+          console.log('[AudioService] Data callback - ws:', !!currentWs, 'wsState:', currentWs?.readyState, 
             'muted:', this.getStore().isMuted, 'auth:', this.getStore().isAuthenticated);
         }
         
         // Send encoded opus data to server
-        if (this.ws && this.ws.readyState === WebSocket.OPEN && !this.getStore().isMuted && this.getStore().isAuthenticated) {
+        if (currentWs && currentWs.readyState === WebSocket.OPEN && !this.getStore().isMuted && this.getStore().isAuthenticated) {
           const message = {
             AudioData: {
               data: btoa(String.fromCharCode(...data)),
@@ -175,27 +183,35 @@ export class AudioServiceV3 {
             }
           };
           
-          this.ws.send(JSON.stringify(message));
+          currentWs.send(JSON.stringify(message));
           
           if (this.sequenceNumber % 10 === 0) {
             console.log('[AudioService] Sent opus data, size:', data.length, 'seq:', this.sequenceNumber);
           }
-        } else if (!this.getStore().isAuthenticated && !this.hasLoggedAuthWait) {
-          console.log('[AudioService] Waiting for authentication before sending audio...');
-          this.hasLoggedAuthWait = true;
-        } else if (this.getStore().isAuthenticated && this.hasLoggedAuthWait) {
-          console.log('[AudioService] Authentication complete, ready to send audio when unmuted');
-          this.hasLoggedAuthWait = false;
+        } else {
+          // Log why we're not sending audio
+          if (this.sequenceNumber % 10 === 0) {
+            console.log('[AudioService] Not sending audio - ws:', !!currentWs, 
+              'wsState:', currentWs?.readyState, 
+              'muted:', this.getStore().isMuted, 
+              'authenticated:', this.getStore().isAuthenticated);
+          }
+          
+          if (!this.getStore().isAuthenticated && !this.hasLoggedAuthWait) {
+            console.log('[AudioService] Waiting for authentication before sending audio...');
+            this.hasLoggedAuthWait = true;
+          } else if (this.getStore().isAuthenticated && this.hasLoggedAuthWait) {
+            console.log('[AudioService] Authentication complete, ready to send audio when unmuted');
+            this.hasLoggedAuthWait = false;
+          }
         }
         
         this.sequenceNumber++;
       });
 
-      // Start recording only if not already recording
-      // The recorder will prompt for mic permissions if needed
-      console.log('[AudioService] Starting recording...');
-      await this.opusService.startRecording();
-      console.log('[AudioService] Recording setup complete');
+      // Don't start recording yet - wait for user gesture (unmute)
+      // This avoids AudioContext autoplay policy issues
+      console.log('[AudioService] Audio capture setup complete, waiting for user gesture to start recording');
       
       // Apply initial mute state (we start muted)
       this.opusService.setMuted(this.getStore().isMuted);
@@ -237,7 +253,7 @@ export class AudioServiceV3 {
 
   async handleIncomingAudio(participantId: string, audioData: any): Promise<void> {
     // Server now sends personalized mix-minus audio, so just play it
-    console.log('[AudioService] Receiving mix-minus audio from server');
+    console.log('[AudioService] Receiving mix-minus audio from participant:', participantId);
     const encodedBuffer = this.base64ToArrayBuffer(audioData.data);
 
     // Decode the Opus data
@@ -250,17 +266,17 @@ export class AudioServiceV3 {
     }
     
     try {
-      // Use consistent stream ID for server mix-minus audio
-      float32Data = await this.opusService.decode(opusData, 'server-mix');
-      console.log('[AudioService] Decoded audio:', opusData.length, 'bytes to', float32Data.length, 'samples');
+      // Use the stream ID from the server (which identifies this specific mix)
+      float32Data = await this.opusService.decode(opusData, participantId);
+      console.log('[AudioService] Decoded audio for stream', participantId, ':', opusData.length, 'bytes to', float32Data.length, 'samples');
       
       // Check if we have actual audio
       const hasAudio = float32Data.some(sample => Math.abs(sample) > 0.001);
       if (!hasAudio) {
-        console.warn('[AudioService] Decoded audio appears to be silent');
+        console.warn('[AudioService] Decoded audio appears to be silent from', participantId);
       }
     } catch (error) {
-      console.error('[AudioService] Failed to decode audio:', error);
+      console.error('[AudioService] Failed to decode audio from', participantId, ':', error);
       return;
     }
 
@@ -275,17 +291,19 @@ export class AudioServiceV3 {
       return;
     }
 
-    // Use single jitter buffer for server's mix-minus audio
-    let jitterBuffer = this.jitterBuffers.get('server-mix');
+    // Use a single jitter buffer for all incoming audio (regardless of stream ID)
+    // This handles role changes where stream ID changes from "mix-for-X" to "server-mix"
+    const bufferKey = 'unified-mix';
+    let jitterBuffer = this.jitterBuffers.get(bufferKey);
     if (!jitterBuffer) {
-      console.log('[AudioService] Creating jitter buffer for server mix');
+      console.log('[AudioService] Creating unified jitter buffer for all incoming audio');
       jitterBuffer = new JitterBuffer();
-      this.jitterBuffers.set('server-mix', jitterBuffer);
-      this.startPlaybackLoop('server-mix');
+      this.jitterBuffers.set(bufferKey, jitterBuffer);
+      this.startPlaybackLoop(bufferKey);
     }
 
     jitterBuffer.push(packet);
-    console.log('[AudioService] Pushed packet to jitter buffer, buffer size:', jitterBuffer.getBufferSize());
+    console.log('[AudioService] Pushed packet to jitter buffer from stream:', participantId, 'buffer size:', jitterBuffer.getBufferSize());
   }
 
   private base64ToArrayBuffer(base64: string): ArrayBuffer {
@@ -392,8 +410,23 @@ export class AudioServiceV3 {
     }
   }
 
-  toggleMute(muted: boolean): void {
+  async toggleMute(muted: boolean): Promise<void> {
     console.log('[AudioService] Toggling mute to:', muted, 'store.isMuted:', this.getStore().isMuted, 'store.isAuthenticated:', this.getStore().isAuthenticated);
+    
+    // Check if this is the first unmute for a speaker (user gesture)
+    const canSpeak = ['Speaker', 'Admin'].includes(this.getStore().myRole || '');
+    
+    if (!muted && canSpeak && this.opusService && !this.hasStartedRecording) {
+      // Start recording on first unmute (user gesture required for AudioContext)
+      console.log('[AudioService] First unmute detected, starting recording with user gesture');
+      try {
+        await this.opusService.startRecording();
+        this.hasStartedRecording = true;
+        console.log('[AudioService] Recording started successfully');
+      } catch (error) {
+        console.error('[AudioService] Failed to start recording:', error);
+      }
+    }
     
     // Update opus service muting
     if (this.opusService) {
@@ -401,7 +434,7 @@ export class AudioServiceV3 {
     }
 
     // Resume audio contexts on user interaction
-    this.resumeAudioContexts();
+    await this.resumeAudioContexts();
   }
 
   private async resumeAudioContexts(): Promise<void> {
@@ -443,5 +476,8 @@ export class AudioServiceV3 {
 
     // Clear buffers
     this.jitterBuffers.clear();
+    
+    // Reset recording flag
+    this.hasStartedRecording = false;
   }
 }
