@@ -31,7 +31,8 @@ export const CallScreenWrapper: React.FC = () => {
     toggleMute,
     sendChatMessage,
     updateRole,
-    isNodeConnection
+    isNodeConnection,
+    speakingStates
   } = useVoiceStore();
 
   const handleLeaveCall = () => {
@@ -63,6 +64,7 @@ export const CallScreenWrapper: React.FC = () => {
         nodeConnected={isNodeConnection}
         joinCall={joinCall}
         authToken={authToken}
+        speakingParticipants={new Set(Array.from(speakingStates.entries()).filter(([_, isSpeaking]) => isSpeaking).map(([id]) => id))}
       />
       <AudioDebugPanel />
     </>

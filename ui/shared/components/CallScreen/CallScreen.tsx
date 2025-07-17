@@ -143,9 +143,9 @@ export const CallScreen: React.FC<CallScreenProps> = ({
           <h2>Participants ({participants.filter(p => p.displayName).length})</h2>
           <ul className="participants-list">
             {participants.filter(p => p.displayName).map((participant) => {
-              // Show speaking effect for unmuted speakers and admins
+              // Show speaking effect only when actively speaking (not just unmuted)
               const canSpeak = participant.role === 'Speaker' || participant.role === 'Admin';
-              const isSpeaking = canSpeak && !participant.isMuted;
+              const isSpeaking = canSpeak && !participant.isMuted && speakingParticipants.has(participant.id);
               const isMe = participant.id === myParticipantId;
               
               return (

@@ -537,13 +537,13 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
                     call.default_role.clone()
                 };
 
-                // Create new participant
+                // Create new participant - everyone starts muted
                 let participant = Participant {
                     id: participant_id.clone(),
                     display_name: final_display_name.clone(),
                     role,
                     connection_type,
-                    is_muted: false,
+                    is_muted: true,
                 };
 
                 // Add participant to call

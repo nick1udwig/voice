@@ -18,7 +18,8 @@ export const CallScreenWrapper: React.FC = () => {
     toggleMute,
     sendChatMessage,
     updateRole,
-    nodeConnected
+    nodeConnected,
+    speakingStates
   } = useVoiceStore();
 
   const handleLeaveCall = async () => {
@@ -49,6 +50,7 @@ export const CallScreenWrapper: React.FC = () => {
       onUpdateRole={updateRole}
       nodeConnected={nodeConnected}
       joinCall={joinCall}
+      speakingParticipants={new Set(Array.from(speakingStates.entries()).filter(([_, isSpeaking]) => isSpeaking).map(([id]) => id))}
     />
   );
 };
