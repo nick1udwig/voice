@@ -234,7 +234,8 @@ export class AudioServiceV3 {
     }
     
     try {
-      float32Data = await this.opusService.decode(opusData);
+      // Use consistent stream ID for server mix-minus audio
+      float32Data = await this.opusService.decode(opusData, 'server-mix');
       console.log('[AudioService] Decoded audio:', opusData.length, 'bytes to', float32Data.length, 'samples');
       
       // Check if we have actual audio

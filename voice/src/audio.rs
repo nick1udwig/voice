@@ -9,6 +9,14 @@ const CHANNELS: u32 = 1;
 const FRAME_SIZE: usize = 960; // 20ms at 48kHz
 const OPUS_BITRATE: i32 = 32000;
 
+// Stream state for each participant
+struct OggStreamState {
+    buffer: Vec<u8>,
+    page_sequence: u32,
+    granule_position: u64,
+    headers_sent: bool,
+}
+
 #[derive(Clone, Debug)]
 pub struct AudioPacket {
     pub seq: u32,
@@ -45,16 +53,21 @@ pub struct AudioProcessor {
     // Voice activity detection per participant
     vad_detectors: HashMap<String, VoiceActivityDetector>,
     
-    // Track if we've sent Ogg headers for each output
-    headers_sent: HashMap<String, bool>,
-    granule_positions: HashMap<String, u64>,
+    // Ogg streaming state for each output stream
+    ogg_streams: HashMap<String, OggStreamState>,
 }
 
 impl AudioProcessor {
     pub fn new() -> Self {
         // Create a shared encoder for mix outputs
         let encoder = match Encoder::new(SAMPLE_RATE, Channels::Mono, Application::Voip) {
-            Ok(enc) => Some(enc),
+            Ok(mut enc) => {
+                // Set bitrate for better quality
+                if let Err(e) = enc.set_bitrate(opus::Bitrate::Bits(OPUS_BITRATE)) {
+                    eprintln!("Failed to set Opus bitrate: {}", e);
+                }
+                Some(enc)
+            },
             Err(e) => {
                 eprintln!("Failed to create Opus encoder: {}", e);
                 None
@@ -72,8 +85,7 @@ impl AudioProcessor {
             packet_loss: HashMap::new(),
             jitter_ms: HashMap::new(),
             vad_detectors: HashMap::new(),
-            headers_sent: HashMap::new(),
-            granule_positions: HashMap::new(),
+            ogg_streams: HashMap::new(),
         }
     }
     
@@ -114,8 +126,7 @@ impl AudioProcessor {
         self.packet_loss.remove(participant_id);
         self.jitter_ms.remove(participant_id);
         self.vad_detectors.remove(participant_id);
-        self.headers_sent.remove(participant_id);
-        self.granule_positions.remove(participant_id);
+        self.ogg_streams.remove(participant_id);
     }
     
     pub fn decode_audio(&mut self, participant_id: &str, opus_data: &[u8]) -> Result<Vec<f32>, String> {
@@ -387,8 +398,8 @@ impl AudioProcessor {
                     Ok(bytes_written) => {
                         opus_output.truncate(bytes_written);
                         
-                        // Create a minimal Ogg stream with just this frame
-                        let ogg_data = Self::create_minimal_ogg_opus(&opus_output);
+                        // Use streaming Ogg for listener mix
+                        let ogg_data = self.write_to_ogg_stream("__listener__", &opus_output);
                         outputs.insert("__listener__".to_string(), ogg_data);
                     }
                     Err(e) => {
@@ -433,8 +444,8 @@ impl AudioProcessor {
                         Ok(bytes_written) => {
                             opus_output.truncate(bytes_written);
                             
-                            // Create a minimal Ogg stream with just this frame
-                            let ogg_data = Self::create_minimal_ogg_opus(&opus_output);
+                            // Use streaming Ogg for mix-minus
+                            let ogg_data = self.write_to_ogg_stream(target_id, &opus_output);
                             outputs.insert(target_id.clone(), ogg_data);
                         }
                         Err(e) => {
@@ -448,47 +459,148 @@ impl AudioProcessor {
         outputs
     }
     
-    fn create_ogg_opus(opus_frame: &[u8], is_first_packet: bool, granule_pos: u64) -> Vec<u8> {
-        let mut output = Vec::new();
-        
-        if is_first_packet {
-            // Create packet writer in a scope to avoid lifetime issues
-            {
-                let mut packet_writer = PacketWriter::new(&mut output);
-                
-                // Create OpusHead packet for the first packet
-                let opus_head = Self::create_opus_head();
-                packet_writer.write_packet(
-                    &opus_head,
-                    0xdeadbeef, // serial number
-                    PacketWriteEndInfo::EndPage,
-                    0,
-                ).unwrap_or_else(|e| eprintln!("Failed to write OpusHead: {}", e));
-                
-                // Create OpusTags packet  
-                let opus_tags = Self::create_opus_tags();
-                packet_writer.write_packet(
-                    &opus_tags,
-                    0xdeadbeef,
-                    PacketWriteEndInfo::EndPage,
-                    0,
-                ).unwrap_or_else(|e| eprintln!("Failed to write OpusTags: {}", e));
+    fn get_or_create_stream(&mut self, stream_id: &str) -> &mut OggStreamState {
+        self.ogg_streams.entry(stream_id.to_string()).or_insert_with(|| {
+            OggStreamState {
+                buffer: Vec::new(),
+                page_sequence: 0,
+                granule_position: 0,
+                headers_sent: false,
             }
-        }
+        })
+    }
+    
+    fn write_to_ogg_stream(&mut self, stream_id: &str, opus_frame: &[u8]) -> Vec<u8> {
+        let stream = self.get_or_create_stream(stream_id);
         
-        // Create a new packet writer for the actual Opus frame
-        {
-            let mut packet_writer = PacketWriter::new(&mut output);
+        if !stream.headers_sent {
+            // First packet: write headers and first audio frame
+            stream.headers_sent = true;
+            stream.buffer.clear();
+            
+            // Use PacketWriter for headers
+            let mut packet_writer = PacketWriter::new(&mut stream.buffer);
+            
+            // Write OpusHead
+            let opus_head = Self::create_opus_head();
+            packet_writer.write_packet(
+                &opus_head,
+                0xdeadbeef,
+                PacketWriteEndInfo::EndPage,
+                0,
+            ).unwrap_or_else(|e| eprintln!("Failed to write OpusHead: {}", e));
+            
+            // Write OpusTags
+            let opus_tags = Self::create_opus_tags();
+            packet_writer.write_packet(
+                &opus_tags,
+                0xdeadbeef,
+                PacketWriteEndInfo::EndPage,
+                0,
+            ).unwrap_or_else(|e| eprintln!("Failed to write OpusTags: {}", e));
+            
+            // Write first audio packet
+            stream.granule_position = FRAME_SIZE as u64;
             packet_writer.write_packet(
                 opus_frame,
                 0xdeadbeef,
                 PacketWriteEndInfo::EndPage,
-                granule_pos,
-            ).unwrap_or_else(|e| eprintln!("Failed to write Opus packet: {}", e));
+                stream.granule_position,
+            ).unwrap_or_else(|e| eprintln!("Failed to write first audio packet: {}", e));
+            
+            drop(packet_writer);
+            
+            // PacketWriter created 3 pages (OpusHead, OpusTags, first audio)
+            stream.page_sequence = 3;
+            
+            // Return the complete initial stream
+            stream.buffer.clone()
+        } else {
+            // Subsequent packets: create continuation page manually
+            stream.granule_position += FRAME_SIZE as u64;
+            
+            // Create Ogg page manually
+            let page = Self::create_ogg_page(
+                opus_frame,
+                stream.page_sequence,
+                stream.granule_position,
+                false, // not first page
+                false, // not last page
+            );
+            stream.page_sequence += 1;
+            
+            page
+        }
+    }
+    
+    fn create_ogg_page(data: &[u8], sequence: u32, granule_pos: u64, is_first: bool, is_last: bool) -> Vec<u8> {
+        let mut page = Vec::new();
+        
+        // OggS magic
+        page.extend_from_slice(b"OggS");
+        
+        // Version (0)
+        page.push(0);
+        
+        // Header type
+        let mut header_type = 0u8;
+        if is_first { header_type |= 0x02; }
+        if is_last { header_type |= 0x04; }
+        page.push(header_type);
+        
+        // Granule position (8 bytes, little-endian)
+        page.extend_from_slice(&granule_pos.to_le_bytes());
+        
+        // Serial number (4 bytes)
+        page.extend_from_slice(&0xdeadbeef_u32.to_le_bytes());
+        
+        // Page sequence (4 bytes)
+        page.extend_from_slice(&sequence.to_le_bytes());
+        
+        // CRC placeholder (4 bytes) - will calculate after
+        let crc_offset = page.len();
+        page.extend_from_slice(&[0, 0, 0, 0]);
+        
+        // Page segments
+        let segments = (data.len() + 254) / 255;
+        page.push(segments as u8);
+        
+        // Segment table
+        let mut remaining = data.len();
+        for _ in 0..segments {
+            let seg_size = remaining.min(255);
+            page.push(seg_size as u8);
+            remaining -= seg_size;
         }
         
-        output
+        // Page data
+        page.extend_from_slice(data);
+        
+        // Calculate and set CRC
+        let crc = Self::calculate_ogg_crc(&page);
+        page[crc_offset..crc_offset + 4].copy_from_slice(&crc.to_le_bytes());
+        
+        page
     }
+    
+    fn calculate_ogg_crc(data: &[u8]) -> u32 {
+        // Ogg uses CRC-32 with polynomial 0x04c11db7
+        let mut crc = 0u32;
+        
+        for &byte in data {
+            crc = crc ^ ((byte as u32) << 24);
+            for _ in 0..8 {
+                if crc & 0x80000000 != 0 {
+                    crc = (crc << 1) ^ 0x04c11db7;
+                } else {
+                    crc = crc << 1;
+                }
+            }
+        }
+        
+        crc
+    }
+    
     
     fn create_opus_head() -> Vec<u8> {
         let mut head = Vec::new();
@@ -517,43 +629,6 @@ impl AudioProcessor {
         tags
     }
     
-    fn create_minimal_ogg_opus(opus_frame: &[u8]) -> Vec<u8> {
-        let mut output = Vec::new();
-        
-        // Create packet writer for the complete Ogg stream
-        let mut packet_writer = PacketWriter::new(&mut output);
-        
-        // Write OpusHead packet
-        let opus_head = Self::create_opus_head();
-        packet_writer.write_packet(
-            &opus_head,
-            0xdeadbeef,
-            PacketWriteEndInfo::EndPage,
-            0,
-        ).unwrap_or_else(|e| eprintln!("Failed to write OpusHead: {}", e));
-        
-        // Write OpusTags packet
-        let opus_tags = Self::create_opus_tags();
-        packet_writer.write_packet(
-            &opus_tags,
-            0xdeadbeef,
-            PacketWriteEndInfo::EndPage,
-            0,
-        ).unwrap_or_else(|e| eprintln!("Failed to write OpusTags: {}", e));
-        
-        // Write the actual Opus frame
-        packet_writer.write_packet(
-            opus_frame,
-            0xdeadbeef,
-            PacketWriteEndInfo::EndStream, // Mark as end of stream
-            FRAME_SIZE as u64,
-        ).unwrap_or_else(|e| eprintln!("Failed to write Opus packet: {}", e));
-        
-        // Let packet_writer go out of scope to ensure everything is flushed
-        drop(packet_writer);
-        
-        output
-    }
     
     fn decode_simple_pcm(&mut self, participant_id: &str, pcm_data: &[u8], original_size: usize) -> Result<Vec<f32>, String> {
         println!("AudioProcessor: Decoding simple PCM format, {} bytes to {} samples", pcm_data.len(), original_size);
@@ -754,7 +829,7 @@ impl std::fmt::Debug for AudioProcessor {
             .field("decoders_count", &self.decoders.len())
             .field("encoder_available", &self.encoder.is_some())
             .field("master_mix_len", &self.master_mix.len())
-            .field("headers_sent", &self.headers_sent.len())
+            .field("ogg_streams_count", &self.ogg_streams.len())
             .finish()
     }
 }
