@@ -33,6 +33,7 @@ export interface BaseVoiceActions {
   leaveCall: () => Promise<void>;
   sendChatMessage: (content: string) => void;
   toggleMute: () => void;
+  updateRole: (targetId: string, newRole: Role) => void;
   handleWebSocketMessage: (message: any) => void;
   connectWebSocket: (url: string) => void;
   disconnect: () => void;
@@ -176,6 +177,22 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
       }
     } else {
       console.error('[VoiceStore] No audio service available for mute toggle');
+    }
+  },
+
+  updateRole: (targetId: string, newRole: Role) => {
+    const ws = get().wsConnection;
+    const myRole = get().myRole;
+
+    if (ws && ws.readyState === WebSocket.OPEN && myRole === 'Admin') {
+      ws.send(JSON.stringify({
+        UpdateRole: {
+          targetId,
+          newRole
+        }
+      }));
+    } else {
+      console.error('[VoiceStore] Cannot update role - not connected or not admin');
     }
   },
 

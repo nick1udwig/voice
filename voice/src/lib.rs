@@ -120,6 +120,8 @@ pub enum WsClientMessage {
     Mute(bool),
     #[serde(rename_all = "camelCase")]
     AudioData { data: String, sample_rate: u32, channels: u32, sequence: Option<u32>, timestamp: Option<u64> },
+    #[serde(rename_all = "camelCase")]
+    UpdateRole { target_id: String, new_role: Role },
     Heartbeat,
 }
 
@@ -371,25 +373,7 @@ impl VoiceState {
         Ok(())
     }
 
-    #[http(method = "POST")]
-    async fn update_role(&mut self, request: UpdateRoleReq) -> Result<(), String> {
-        let call = self.calls.get_mut(&request.call_id)
-            .ok_or_else(|| "Call not found".to_string())?;
-
-        let requester = call.participants.get(&request.requester_id)
-            .ok_or_else(|| "Requester not found".to_string())?;
-
-        if !matches!(requester.role, Role::Admin) {
-            return Err("Unauthorized: Only admins can update roles".to_string());
-        }
-
-        let participant = call.participants.get_mut(&request.target_id)
-            .ok_or_else(|| "Target participant not found".to_string())?;
-
-        participant.role = request.new_role.clone();
-
-        Ok(())
-    }
+    // Role updates are now handled via WebSocket messages
 
 
 
@@ -743,6 +727,34 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
                     }
                 }
             };
+        }
+        WsClientMessage::UpdateRole { target_id, new_role } => {
+            // Check if requester has admin permission
+            if !matches!(participant_role, Role::Admin) {
+                send_error_to_channel(channel_id, "No permission to change roles");
+                return;
+            }
+            
+            if let Some(call) = state.calls.get_mut(&call_id) {
+                // Check if target exists
+                if let Some(target_participant) = call.participants.get_mut(&target_id) {
+                    // Update the role
+                    target_participant.role = new_role.clone();
+                    
+                    // Role is already updated in the participant data above
+                    // No need to update connection mapping as it only stores participant_id
+                    
+                    // Broadcast role update to all participants
+                    broadcast_to_call(state, &call_id, WsServerMessage::RoleUpdated(
+                        WsRoleUpdate {
+                            participant_id: target_id.clone(),
+                            new_role,
+                        }
+                    ));
+                } else {
+                    send_error_to_channel(channel_id, "Target participant not found");
+                }
+            }
         }
         WsClientMessage::Heartbeat => {
             // Keep connection alive - no action needed

@@ -13,9 +13,11 @@ export const CallScreenWrapper: React.FC = () => {
     participants,
     chatMessages,
     myRole,
+    myParticipantId,
     isMuted,
     toggleMute,
     sendChatMessage,
+    updateRole,
     nodeConnected
   } = useVoiceStore();
 
@@ -40,9 +42,11 @@ export const CallScreenWrapper: React.FC = () => {
       participants={Array.from(participants.values())}
       chatMessages={chatMessages}
       myRole={myRole}
+      myParticipantId={myParticipantId || ''}
       isMuted={isMuted}
       onToggleMute={toggleMute}
       onSendMessage={sendChatMessage}
+      onUpdateRole={updateRole}
       nodeConnected={nodeConnected}
       joinCall={joinCall}
     />

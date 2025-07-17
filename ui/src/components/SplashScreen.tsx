@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useVoiceStore } from '../store/voice';
 import { startNodeHandshake, Role } from '../../../target/ui/caller-utils';
+import { getRoleEmoji } from '../../shared/utils/roleUtils';
 
 export const SplashScreen: React.FC = () => {
   const [joinLink, setJoinLink] = useState('');
@@ -40,9 +41,9 @@ export const SplashScreen: React.FC = () => {
           onChange={(e) => setDefaultRole(e.target.value as Role)}
           className="role-select"
         >
-          <option value="Listener">Listener (default)</option>
-          <option value="Chatter">Chatter (default)</option>
-          <option value="Speaker">Speaker (default)</option>
+          <option value="Listener">{getRoleEmoji('Listener')} Listener (default)</option>
+          <option value="Chatter">{getRoleEmoji('Chatter')} Chatter (default)</option>
+          <option value="Speaker">{getRoleEmoji('Speaker')} Speaker (default)</option>
         </select>
         <button onClick={handleCreateCall} className="primary-button">
           Create New Call
