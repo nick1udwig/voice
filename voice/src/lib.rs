@@ -707,15 +707,35 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
                         let mixes = proc.create_mix_minus_outputs();
                         kiprintln!("Created {} mix-minus outputs", mixes.len());
                         
+                        // Clone listener mix for later use
+                        let listener_mix = mixes.get("__listener__").cloned();
+                        
                         // Send personalized mix to each participant
-                        for (target_id, mix_data) in mixes {
+                        for (target_id, mix_data) in &mixes {
                             kiprintln!("Processing mix for target: {}, data size: {}", target_id, mix_data.len());
                             if target_id == "__listener__" {
                                 // Broadcast listener mix to all non-speaking participants
-                                broadcast_to_non_speakers(state, &call_id, mix_data, sequence, timestamp);
+                                broadcast_to_non_speakers(state, &call_id, mix_data.clone(), sequence, timestamp);
                             } else {
                                 // Send personalized mix to specific participant
-                                send_audio_to_participant(state, &target_id, mix_data, sequence, timestamp);
+                                send_audio_to_participant(state, target_id, mix_data.clone(), sequence, timestamp);
+                            }
+                        }
+                        
+                        // Also send appropriate audio to speakers who haven't sent audio yet
+                        if let Some(call) = state.calls.get(&call_id) {
+                            for (pid, participant) in &call.participants {
+                                if matches!(participant.role, Role::Speaker | Role::Admin) {
+                                    // Check if this speaker already got a personalized mix
+                                    if !mixes.contains_key(pid) && pid != &participant_id {
+                                        // This speaker hasn't sent audio yet, send them the listener mix
+                                        // (all active speakers' audio)
+                                        if let Some(ref mix_data) = listener_mix {
+                                            kiprintln!("Sending listener mix to non-active speaker: {}", pid);
+                                            send_audio_to_participant(state, pid, mix_data.clone(), sequence, timestamp);
+                                        }
+                                    }
+                                }
                             }
                         }
                     }

@@ -111,12 +111,16 @@ export class AudioServiceV3 {
   }
 
   async initializeAudio(role: string, participantId: string, isHost: boolean): Promise<void> {
-    console.log('[AudioService] Initializing audio:', { role, participantId });
+    console.log('[AudioService] Initializing audio:', { role, participantId, hasOpusService: !!this.opusService });
     
-    // Initialize opus service for all users (needed for decoding)
-    console.log('[AudioService] Initializing opus service');
-    this.opusService = new ContinuousOpusService();
-    await this.opusService.initialize();
+    // Initialize opus service only if it doesn't exist (needed for decoding)
+    if (!this.opusService) {
+      console.log('[AudioService] Creating new opus service');
+      this.opusService = new ContinuousOpusService();
+      await this.opusService.initialize();
+    } else {
+      console.log('[AudioService] Opus service already exists');
+    }
     
     const canSpeak = ['Speaker', 'Admin'].includes(role);
     
@@ -125,11 +129,20 @@ export class AudioServiceV3 {
       await this.setupAudioCapture();
     } else {
       console.log('[AudioService] User cannot speak (role:', role, ')');
+      // If we previously could speak, stop recording
+      if (this.opusService) {
+        console.log('[AudioService] Stopping any existing recording');
+        await this.opusService.stopRecording();
+      }
     }
     
-    // All participants set up playback
-    console.log('[AudioService] Setting up audio playback');
-    await this.setupAudioPlayback();
+    // Set up playback only if not already set up
+    if (!this.playbackContext) {
+      console.log('[AudioService] Setting up audio playback');
+      await this.setupAudioPlayback();
+    } else {
+      console.log('[AudioService] Playback already set up');
+    }
     
     console.log('[AudioService] Audio initialization complete');
   }
@@ -142,7 +155,7 @@ export class AudioServiceV3 {
         throw new Error('Opus service not initialized');
       }
       
-      // Set up callback for encoded data
+      // Set up callback for encoded data (safe to call multiple times)
       this.opusService.setOnDataCallback((data: Uint8Array) => {
         // Debug log every 10th callback
         if (this.sequenceNumber % 10 === 0) {
@@ -178,8 +191,11 @@ export class AudioServiceV3 {
         this.sequenceNumber++;
       });
 
-      // Start recording - opus-recorder will handle getUserMedia
+      // Start recording only if not already recording
+      // The recorder will prompt for mic permissions if needed
+      console.log('[AudioService] Starting recording...');
       await this.opusService.startRecording();
+      console.log('[AudioService] Recording setup complete');
       
       // Apply initial mute state (we start muted)
       this.opusService.setMuted(this.getStore().isMuted);

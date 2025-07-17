@@ -68,7 +68,13 @@ export class ContinuousOpusService {
       throw new Error('Recorder not initialized');
     }
 
-    console.log('[ContinuousOpusService] Starting recording');
+    // Check if already recording
+    if (this.recorder.state === 'recording') {
+      console.log('[ContinuousOpusService] Already recording, skipping start');
+      return;
+    }
+
+    console.log('[ContinuousOpusService] Starting recording, current state:', this.recorder.state);
     
     // Start recording like the example
     await this.recorder.start().catch((e: Error) => {
@@ -80,7 +86,13 @@ export class ContinuousOpusService {
   async stopRecording(): Promise<void> {
     if (!this.recorder) return;
     
-    console.log('[ContinuousOpusService] Stopping recording');
+    // Check if actually recording
+    if (this.recorder.state !== 'recording' && this.recorder.state !== 'paused') {
+      console.log('[ContinuousOpusService] Not recording, skipping stop. State:', this.recorder.state);
+      return;
+    }
+    
+    console.log('[ContinuousOpusService] Stopping recording, current state:', this.recorder.state);
     await this.recorder.stop();
   }
 

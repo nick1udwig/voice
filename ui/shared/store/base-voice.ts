@@ -232,6 +232,26 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
 
           // Update own role if it's the current user
           if (participantId === state.myParticipantId) {
+            const oldRole = state.myRole;
+            
+            // Check if we're being promoted from a non-speaking to speaking role
+            const wasNonSpeaker = oldRole && ['Listener', 'Chatter'].includes(oldRole);
+            const isNowSpeaker = ['Speaker', 'Admin'].includes(newRole);
+            const wasSpeaker = oldRole && ['Speaker', 'Admin'].includes(oldRole);
+            const isNowNonSpeaker = ['Listener', 'Chatter'].includes(newRole);
+            
+            if (wasNonSpeaker && isNowSpeaker) {
+              console.log('[VoiceStore] Promoted from non-speaker to speaker, reinitializing audio');
+              // Reinitialize audio with new role after state update
+              // This will set up audio capture without destroying existing service
+              setTimeout(() => get().initializeAudio(), 100);
+            } else if (wasSpeaker && isNowNonSpeaker) {
+              console.log('[VoiceStore] Demoted from speaker to non-speaker, reinitializing audio');
+              // Reinitialize audio with new role after state update
+              // This will stop recording but keep playback
+              setTimeout(() => get().initializeAudio(), 100);
+            }
+            
             return {
               participants: newParticipants,
               myRole: newRole
