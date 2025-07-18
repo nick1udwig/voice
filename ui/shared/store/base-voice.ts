@@ -226,9 +226,10 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
   },
 
   handleWebSocketMessage: (message: any) => {
-    console.log('WebSocket message:', message);
-    console.log('WebSocket message type:', typeof message);
-    console.log('WebSocket message keys:', Object.keys(message));
+    // Log only important messages
+    if (message.JoinSuccess || message.Error || message.CallEnded) {
+      console.log('WebSocket message:', Object.keys(message)[0]);
+    }
     
     // Log specific important messages
     if (message.CallEnded) {
@@ -387,6 +388,16 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
           return { participants: newParticipants };
         }
         return state;
+      });
+    }
+
+    // Handle speaking state updates from VAD
+    if (message.SpeakingStateUpdated) {
+      const { participantId, isSpeaking } = message.SpeakingStateUpdated;
+      set((state: BaseVoiceState) => {
+        const newSpeakingStates = new Map(state.speakingStates);
+        newSpeakingStates.set(participantId, isSpeaking);
+        return { speakingStates: newSpeakingStates };
       });
     }
 

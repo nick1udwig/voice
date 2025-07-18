@@ -1,5 +1,6 @@
 import { BaseVoiceStore } from '../store/base-voice';
 import { ContinuousOpusService } from './continuous-opus-service';
+import { VadService } from './vad-service';
 
 interface AudioConfig {
   sampleRate: number;
@@ -43,9 +44,8 @@ class JitterBuffer {
     this.buffer.set(packet.sequenceNumber, packet);
 
     // Debug: Log buffer state occasionally
-    if (this.buffer.size % 10 === 0) {
-      console.log('[JitterBuffer] Buffer size:', this.buffer.size, 'latest seq:', packet.sequenceNumber, 
-        'audioContext state:', this.audioContext?.state);
+    if (this.buffer.size % 50 === 0) {
+      console.log('[JitterBuffer] Buffer size:', this.buffer.size, 'latest seq:', packet.sequenceNumber);
     }
 
     // Clean up old packets
@@ -94,7 +94,8 @@ class JitterBuffer {
       packetsScheduled++;
     }
 
-    if (packetsScheduled > 0) {
+    // Log only if many packets scheduled
+    if (packetsScheduled > 5) {
       console.log('[JitterBuffer] Scheduled', packetsScheduled, 'packets, buffer remaining:', this.buffer.size);
     }
 
@@ -132,12 +133,10 @@ class JitterBuffer {
         this.scheduledSources.delete(source);
       };
 
-      // Log scheduling occasionally
-      if (packet.sequenceNumber % 50 === 0) {
+      // Log scheduling rarely
+      if (packet.sequenceNumber % 100 === 0) {
         console.log('[JitterBuffer] Scheduled packet seq:', packet.sequenceNumber, 
-          'at time:', this.nextScheduledTime, 
-          'current time:', this.audioContext.currentTime,
-          'buffer size:', this.buffer.size);
+          'at time:', this.nextScheduledTime);
       }
 
       // Update next scheduled time
@@ -199,9 +198,12 @@ export class AudioServiceV3 {
   private config: AudioConfig;
   private sequenceNumber: number = 0;
   private opusService: ContinuousOpusService | null = null;
+  private vadService: VadService | null = null;
   private sampleRate: number = 48000;
   private hasLoggedAuthWait: boolean = false;
   private hasStartedRecording: boolean = false;
+  private isVadActive: boolean = false;
+  private lastSpeakingState: boolean = false;
 
   // Jitter buffers for incoming audio
   private jitterBuffers: Map<string, JitterBuffer> = new Map();
@@ -271,6 +273,20 @@ export class AudioServiceV3 {
       if (this.opusService) {
         await this.opusService.stopRecording();
       }
+      
+      // Initialize VAD for speakers
+      if (!this.vadService) {
+        console.log('[AudioService] Creating VAD service');
+        this.vadService = new VadService({
+          onSpeechStart: () => this.handleSpeechStart(),
+          onSpeechEnd: () => this.handleSpeechEnd(),
+          positiveSpeechThreshold: 0.5,
+          negativeSpeechThreshold: 0.35,
+          minSpeechFrames: 3
+        });
+        await this.vadService.initialize();
+      }
+      
       await this.setupAudioCapture();
     } else {
       console.log('[AudioService] User cannot speak (role:', role, ')');
@@ -281,6 +297,13 @@ export class AudioServiceV3 {
       }
       // Reset recording flag for non-speakers
       this.hasStartedRecording = false;
+      
+      // Clean up VAD for non-speakers
+      if (this.vadService) {
+        console.log('[AudioService] Cleaning up VAD for non-speaker');
+        await this.vadService.cleanup();
+        this.vadService = null;
+      }
     }
     
     // Set up playback only if not already set up
@@ -307,14 +330,18 @@ export class AudioServiceV3 {
         // Always get fresh WebSocket from store
         const currentWs = this.getStore().wsConnection;
         
-        // Debug log every 10th callback
-        if (this.sequenceNumber % 10 === 0) {
+        // Debug log rarely
+        if (this.sequenceNumber % 100 === 0) {
           console.log('[AudioService] Data callback - ws:', !!currentWs, 'wsState:', currentWs?.readyState, 
             'muted:', this.getStore().isMuted, 'auth:', this.getStore().isAuthenticated);
         }
         
-        // Send encoded opus data to server
-        if (currentWs && currentWs.readyState === WebSocket.OPEN && !this.getStore().isMuted && this.getStore().isAuthenticated) {
+        // Send encoded opus data to server only if VAD is active (speaking) or VAD is not enabled
+        const shouldSend = currentWs && currentWs.readyState === WebSocket.OPEN && 
+                          !this.getStore().isMuted && this.getStore().isAuthenticated &&
+                          (this.isVadActive || !this.vadService);
+                          
+        if (shouldSend) {
           const message = {
             AudioData: {
               data: btoa(String.fromCharCode(...data)),
@@ -327,12 +354,12 @@ export class AudioServiceV3 {
           
           currentWs.send(JSON.stringify(message));
           
-          if (this.sequenceNumber % 10 === 0) {
-            console.log('[AudioService] Sent opus data, size:', data.length, 'seq:', this.sequenceNumber);
+          if (this.sequenceNumber % 100 === 0) {
+            console.log('[AudioService] Sent opus data, size:', data.length, 'seq:', this.sequenceNumber, 'VAD active:', this.isVadActive);
           }
         } else {
-          // Log why we're not sending audio
-          if (this.sequenceNumber % 10 === 0) {
+          // Log why we're not sending audio (rarely)
+          if (this.sequenceNumber % 100 === 0) {
             console.log('[AudioService] Not sending audio - ws:', !!currentWs, 
               'wsState:', currentWs?.readyState, 
               'muted:', this.getStore().isMuted, 
@@ -472,6 +499,12 @@ export class AudioServiceV3 {
         await this.opusService.startRecording();
         this.hasStartedRecording = true;
         console.log('[AudioService] Recording started successfully');
+        
+        // Start VAD after recording starts
+        if (this.vadService) {
+          await this.vadService.start();
+          console.log('[AudioService] VAD started');
+        }
       } catch (error) {
         console.error('[AudioService] Failed to start recording:', error);
       }
@@ -480,6 +513,18 @@ export class AudioServiceV3 {
     // Update opus service muting
     if (this.opusService) {
       this.opusService.setMuted(muted);
+    }
+    
+    // Handle VAD pause/resume based on mute state
+    if (this.vadService) {
+      if (muted) {
+        this.vadService.pause();
+        // Reset VAD state when muted
+        this.isVadActive = false;
+        this.updateSpeakingState(false);
+      } else if (this.hasStartedRecording) {
+        this.vadService.resume();
+      }
     }
 
     // Resume audio contexts on user interaction
@@ -509,6 +554,37 @@ export class AudioServiceV3 {
     return null;
   }
 
+  private handleSpeechStart(): void {
+    console.log('[AudioService] Speech started (VAD)');
+    this.isVadActive = true;
+    this.updateSpeakingState(true);
+  }
+
+  private handleSpeechEnd(): void {
+    console.log('[AudioService] Speech ended (VAD)');
+    this.isVadActive = false;
+    this.updateSpeakingState(false);
+  }
+
+  private updateSpeakingState(isSpeaking: boolean): void {
+    // Only send update if state changed
+    if (this.lastSpeakingState !== isSpeaking) {
+      this.lastSpeakingState = isSpeaking;
+      
+      const ws = this.getStore().wsConnection;
+      if (ws && ws.readyState === WebSocket.OPEN && this.getStore().isAuthenticated) {
+        const message = {
+          UpdateSpeakingState: {
+            isSpeaking: isSpeaking
+          }
+        };
+        
+        ws.send(JSON.stringify(message));
+        console.log('[AudioService] Sent speaking state update:', isSpeaking);
+      }
+    }
+  }
+
   async cleanup(): Promise<void> {
     console.log('[AudioService] Cleaning up');
     
@@ -519,6 +595,12 @@ export class AudioServiceV3 {
     if (this.opusService) {
       await this.opusService.cleanup();
       this.opusService = null;
+    }
+    
+    // Stop VAD service
+    if (this.vadService) {
+      await this.vadService.cleanup();
+      this.vadService = null;
     }
 
     // Close audio contexts
@@ -534,5 +616,6 @@ export class AudioServiceV3 {
     
     // Reset recording flag
     this.hasStartedRecording = false;
+    this.isVadActive = false;
   }
 }

@@ -46,7 +46,10 @@ export class ContinuousOpusService {
     // Set up event handlers
     this.recorder.ondataavailable = (typedArray: ArrayBuffer) => {
       const data = new Uint8Array(typedArray);
-      console.log('[ContinuousOpusService] Data received:', data.length, 'bytes - muted:', this.isMuted, 'recorder state:', this.recorder?.state);
+      // Log data receipt occasionally
+      if (Math.random() < 0.01) { // 1% chance
+        console.log('[ContinuousOpusService] Data received:', data.length, 'bytes - muted:', this.isMuted);
+      }
       
       // Always forward data - let AudioService decide whether to send
       this.onDataCallback?.(data);
@@ -166,7 +169,10 @@ export class ContinuousOpusService {
           const copyLength = Math.min(sourceData.length, 960);
           data.set(sourceData.subarray(0, copyLength));
           
-          console.log('[ContinuousOpusService] Decoded', copyLength, 'samples for stream:', streamId);
+          // Rarely log decoding
+          if (Math.random() < 0.01) {
+            console.log('[ContinuousOpusService] Decoded', copyLength, 'samples for stream:', streamId);
+          }
           pending.resolve(data);
         }
       }

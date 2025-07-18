@@ -124,6 +124,8 @@ pub enum WsClientMessage {
     #[serde(rename_all = "camelCase")]
     UpdateRole { target_id: String, new_role: Role },
     UpdateSettings(UserSettings),
+    #[serde(rename_all = "camelCase")]
+    UpdateSpeakingState { is_speaking: bool },
     Heartbeat,
 }
 
@@ -177,6 +179,8 @@ pub enum WsServerMessage {
     AudioData(WsAudioData),
     #[serde(rename_all = "camelCase")]
     SettingsUpdated { participant_id: String, settings: UserSettings },
+    #[serde(rename_all = "camelCase")]
+    SpeakingStateUpdated { participant_id: String, is_speaking: bool },
     Error(String),
     CallEnded,
     CloseConnection, // New message to tell frontend to close its WebSocket
@@ -837,6 +841,16 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
                 } else {
                     send_error_to_channel(channel_id, "Participant not found");
                 }
+            }
+        }
+        WsClientMessage::UpdateSpeakingState { is_speaking } => {
+            // Only allow speakers and admins to update speaking state
+            if matches!(participant_role, Role::Speaker | Role::Admin) {
+                // Broadcast speaking state to all participants
+                broadcast_to_call(state, &call_id, WsServerMessage::SpeakingStateUpdated {
+                    participant_id: participant_id.clone(),
+                    is_speaking,
+                });
             }
         }
         WsClientMessage::Heartbeat => {
