@@ -38,6 +38,15 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
         <label className="settings-toggle">
           <input
             type="checkbox"
+            checked={settings.soundOnUserLeave}
+            onChange={() => handleToggle('soundOnUserLeave')}
+          />
+          <span>Play sound when user leaves</span>
+        </label>
+        
+        <label className="settings-toggle">
+          <input
+            type="checkbox"
             checked={settings.soundOnChatMessage}
             onChange={() => handleToggle('soundOnChatMessage')}
           />

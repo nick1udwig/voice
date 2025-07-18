@@ -1,8 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useVoiceStore } from '../store/voice';
-import { startNodeHandshake, Role, UserSettings } from '../../../target/ui/caller-utils';
+import { startNodeHandshake, Role, UserSettings, getHostSettings, updateHostSettings } from '../../../target/ui/caller-utils';
 import { getRoleEmoji } from '../../shared/utils/roleUtils';
-import { SettingsPanel } from '../../shared/components/SettingsPanel';
+import { SettingsModal } from '../../shared/components/SettingsModal';
 import { DEFAULT_SETTINGS } from '../../shared/types/settings';
 import '../../shared/styles/settings.css';
 
@@ -11,9 +11,38 @@ export const SplashScreen: React.FC = () => {
   const [defaultRole, setDefaultRole] = useState<Role>('Chatter');
   const [settings, setSettings] = useState<UserSettings>({ ...DEFAULT_SETTINGS });
   const [showSettings, setShowSettings] = useState(false);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
   const { createCall, nodeConnected } = useVoiceStore();
+  
+  // Load settings from backend when component mounts
+  useEffect(() => {
+    const loadSettings = async () => {
+      try {
+        const hostSettings = await getHostSettings();
+        setSettings(hostSettings);
+        setSettingsLoaded(true);
+      } catch (error) {
+        console.error('Failed to load host settings:', error);
+        // Use defaults if loading fails
+        setSettingsLoaded(true);
+      }
+    };
+    loadSettings();
+  }, []);
+  
+  // Save settings to backend when they change
+  const handleSettingsChange = async (newSettings: UserSettings) => {
+    setSettings(newSettings);
+    try {
+      await updateHostSettings(newSettings);
+    } catch (error) {
+      console.error('Failed to save host settings:', error);
+      // Could show an error notification here
+    }
+  };
 
   const handleCreateCall = async () => {
+    // Settings are already stored on backend, just create the call
     await createCall(defaultRole, settings);
   };
 
@@ -37,8 +66,6 @@ export const SplashScreen: React.FC = () => {
 
   return (
     <div className="splash-container">
-      <h1>Voice Call System</h1>
-
       <div className="action-section">
         <h2>Host a Call</h2>
         <label>Default role for participants:</label>
@@ -74,22 +101,20 @@ export const SplashScreen: React.FC = () => {
         </button>
       </div>
       
-      <div className="action-section">
-        <button 
-          onClick={() => setShowSettings(!showSettings)}
-          className="settings-button"
-        >
-          {showSettings ? 'Hide Settings' : 'Show Settings'}
-        </button>
-        
-        {showSettings && (
-          <SettingsPanel 
-            settings={settings}
-            onSettingsChange={setSettings}
-            isInCall={false}
-          />
-        )}
-      </div>
+      <button 
+        onClick={() => setShowSettings(true)}
+        className="settings-button"
+        style={{ marginTop: '2rem' }}
+      >
+        ⚙️ Settings
+      </button>
+      
+      <SettingsModal
+        isOpen={showSettings}
+        onClose={() => setShowSettings(false)}
+        settings={settings}
+        onSettingsChange={handleSettingsChange}
+      />
     </div>
   );
 };

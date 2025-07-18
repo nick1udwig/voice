@@ -63,6 +63,30 @@ export class NotificationSounds {
     }
   }
   
+  // Play a descending tone for user leave
+  playUserLeaveSound() {
+    try {
+      const ctx = this.getAudioContext();
+      const oscillator = ctx.createOscillator();
+      const gainNode = ctx.createGain();
+      
+      oscillator.connect(gainNode);
+      gainNode.connect(ctx.destination);
+      
+      // Pleasant descending tone (opposite of join)
+      oscillator.frequency.setValueAtTime(660, ctx.currentTime); // E5
+      oscillator.frequency.exponentialRampToValueAtTime(440, ctx.currentTime + 0.1); // A4
+      
+      gainNode.gain.setValueAtTime(0.1, ctx.currentTime);
+      gainNode.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.2);
+      
+      oscillator.start(ctx.currentTime);
+      oscillator.stop(ctx.currentTime + 0.2);
+    } catch (e) {
+      console.error('Failed to play user leave sound:', e);
+    }
+  }
+  
   cleanup() {
     if (this.audioContext) {
       this.audioContext.close();

@@ -41,7 +41,8 @@ export const useVoiceStore = create<VoiceStore>((set, get) => ({
         sessionStorage.setItem('isHost', 'true');
         sessionStorage.setItem('hostCallId', result.id);
         
-        // Store settings to use when joining
+        // The host's settings are already stored on backend, but we'll pass them
+        // when joining to avoid an extra API call
         if (settings) {
           sessionStorage.setItem('hostSettings', JSON.stringify(settings));
         }

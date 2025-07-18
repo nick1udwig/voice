@@ -1,14 +1,28 @@
 .settings-panel {
-  background: var(--card-background, #f9f9f9);
-  border: 1px solid var(--border-color, #ddd);
+  background: var(--card-background);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   padding: 1.5rem;
   margin: 1rem 0;
 }
 
+/* Dark mode support */
+@media (prefers-color-scheme: dark) {
+  .settings-panel {
+    background: #1a1a1a;
+    border-color: #333;
+  }
+}
+
 .settings-panel h3 {
   margin: 0 0 1rem 0;
-  color: var(--text-primary, #333);
+  color: var(--text-primary);
+}
+
+@media (prefers-color-scheme: dark) {
+  .settings-panel h3 {
+    color: #e0e0e0;
+  }
 }
 
 .settings-section {
@@ -22,9 +36,15 @@
 .settings-section h4 {
   margin: 0 0 0.75rem 0;
   font-size: 0.9rem;
-  color: var(--text-secondary, #666);
+  color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.5px;
+}
+
+@media (prefers-color-scheme: dark) {
+  .settings-section h4 {
+    color: #999;
+  }
 }
 
 .settings-toggle {
@@ -41,13 +61,25 @@
   padding: 0.5rem;
 }
 
+@media (prefers-color-scheme: dark) {
+  .settings-toggle:hover {
+    background: rgba(255, 255, 255, 0.05);
+  }
+}
+
 .settings-toggle input[type="checkbox"] {
   margin-right: 0.75rem;
   cursor: pointer;
 }
 
 .settings-toggle span {
-  color: var(--text-primary, #333);
+  color: var(--text-primary);
+}
+
+@media (prefers-color-scheme: dark) {
+  .settings-toggle span {
+    color: #e0e0e0;
+  }
 }
 
 .settings-note {
@@ -56,7 +88,14 @@
   background: rgba(0, 123, 255, 0.1);
   border-radius: 4px;
   font-size: 0.9rem;
-  color: var(--text-secondary, #666);
+  color: var(--text-secondary);
+}
+
+@media (prefers-color-scheme: dark) {
+  .settings-note {
+    background: rgba(100, 149, 237, 0.2);
+    color: #aaa;
+  }
 }
 
 /* Settings button in call screen */
@@ -99,6 +138,13 @@
   position: relative;
 }
 
+@media (prefers-color-scheme: dark) {
+  .settings-modal-content {
+    background: #1a1a1a;
+    color: #e0e0e0;
+  }
+}
+
 .settings-modal-close {
   position: absolute;
   top: 1rem;
@@ -107,9 +153,19 @@
   border: none;
   font-size: 1.5rem;
   cursor: pointer;
-  color: var(--text-secondary, #666);
+  color: var(--text-secondary);
 }
 
 .settings-modal-close:hover {
-  color: var(--text-primary, #333);
+  color: var(--text-primary);
+}
+
+@media (prefers-color-scheme: dark) {
+  .settings-modal-close {
+    color: #999;
+  }
+  
+  .settings-modal-close:hover {
+    color: #e0e0e0;
+  }
 }

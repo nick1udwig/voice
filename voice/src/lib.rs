@@ -192,6 +192,7 @@ struct VoiceState {
     word_dictionary: Vec<String>,
     used_pleb_names: HashMap<String, Vec<String>>,
     node_auth_tokens: HashMap<String, String>, // auth_token -> node_id
+    host_settings: UserSettings, // Host's default settings
     #[serde(skip)]
     audio_processors: HashMap<String, Arc<Mutex<AudioProcessor>>>, // Per call audio processor
 }
@@ -211,6 +212,7 @@ struct Call {
 #[serde(rename_all = "camelCase")]
 pub struct UserSettings {
     pub sound_on_user_join: bool,
+    pub sound_on_user_leave: bool,
     pub sound_on_chat_message: bool,
     pub show_images_in_chat: bool,
 }
@@ -476,6 +478,17 @@ impl VoiceState {
         Ok(NodeHandshakeResp {
             auth_token,
         })
+    }
+    
+    #[http(method = "GET", path = "/host-settings")]
+    async fn get_host_settings(&self) -> Result<UserSettings, String> {
+        Ok(self.host_settings.clone())
+    }
+    
+    #[http(method = "POST", path = "/host-settings")]
+    async fn update_host_settings(&mut self, settings: UserSettings) -> Result<(), String> {
+        self.host_settings = settings;
+        Ok(())
     }
 
     #[ws]

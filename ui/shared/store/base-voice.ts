@@ -258,6 +258,12 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
         newParticipants.delete(participantId);
         return { participants: newParticipants };
       });
+      
+      // Play sound if enabled in settings
+      const settings = get().mySettings;
+      if (settings.soundOnUserLeave) {
+        notificationSounds.playUserLeaveSound();
+      }
     }
 
     if (message.Chat) {

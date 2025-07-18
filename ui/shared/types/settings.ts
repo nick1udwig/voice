@@ -1,6 +1,7 @@
 export interface UserSettings {
   // Sound notifications
   soundOnUserJoin: boolean;
+  soundOnUserLeave: boolean;
   soundOnChatMessage: boolean;
   
   // Chat features
@@ -13,6 +14,7 @@ export interface UserSettings {
 
 export const DEFAULT_SETTINGS: UserSettings = {
   soundOnUserJoin: false,
+  soundOnUserLeave: false,
   soundOnChatMessage: false,
   showImagesInChat: false,
 };
