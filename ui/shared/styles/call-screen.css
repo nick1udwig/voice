@@ -292,11 +292,24 @@ body {
 
 .chat-message {
   margin-bottom: 0.5rem;
+  text-align: left;
 }
 
 .chat-message .sender {
   font-weight: bold;
   margin-right: 0.5rem;
+}
+
+.chat-image-container {
+  display: block;
+  margin: 0.5rem 0;
+}
+
+.chat-image {
+  max-width: 100%;
+  max-height: 300px;
+  border-radius: 4px;
+  cursor: pointer;
 }
 
 .chat-form {

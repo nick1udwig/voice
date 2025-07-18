@@ -1,22 +1,27 @@
-import React, { useEffect, useState } from 'react';
-import { ParticipantInfo, ChatMessage, Role } from '../../../../target/ui/caller-utils';
+import React, { useEffect, useState, useRef } from 'react';
+import { ParticipantInfo, ChatMessage as ChatMessageType, Role, UserSettings } from '../../../../target/ui/caller-utils';
 import { getRoleEmoji, ROLE_OPTIONS } from '../../utils/roleUtils';
+import { ChatMessage } from '../ChatMessage';
+import { SettingsModal } from '../SettingsModal';
+import '../../styles/settings.css';
 
 interface CallScreenProps {
   callId: string;
   onLeaveCall?: () => void;
   participants: ParticipantInfo[];
-  chatMessages: ChatMessage[];
+  chatMessages: ChatMessageType[];
   myRole: Role | null;
   isMuted: boolean;
   onToggleMute: () => void;
   onSendMessage: (message: string) => void;
   onUpdateRole: (targetId: string, newRole: Role) => void;
+  onUpdateSettings?: (settings: UserSettings) => void;
   nodeConnected?: boolean;
-  joinCall: (callId: string, authToken?: string | null) => void;
+  joinCall: (callId: string, authToken?: string | null, settings?: UserSettings) => void;
   authToken?: string | null;
   myParticipantId?: string;
   speakingParticipants?: Set<string>;
+  mySettings: UserSettings;
 }
 
 export const CallScreen: React.FC<CallScreenProps> = ({
@@ -33,20 +38,40 @@ export const CallScreen: React.FC<CallScreenProps> = ({
   joinCall,
   authToken,
   myParticipantId = '',
-  speakingParticipants = new Set()
+  speakingParticipants = new Set(),
+  mySettings,
+  onUpdateSettings
 }) => {
   const [message, setMessage] = useState('');
   const [audioResumed, setAudioResumed] = useState(false);
   const [roleMenuOpen, setRoleMenuOpen] = useState<string | null>(null);
   const [showCopySuccess, setShowCopySuccess] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const menuRef = React.useRef<HTMLDivElement>(null);
+  const chatMessagesRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (callId) {
+      // Check if we have stored settings (for host)
+      const storedSettings = sessionStorage.getItem('hostSettings');
+      const settings = storedSettings ? JSON.parse(storedSettings) : undefined;
+      
+      // Clear the stored settings after using them
+      if (storedSettings) {
+        sessionStorage.removeItem('hostSettings');
+      }
+      
       // Join the call - works for both authenticated and unauthenticated users
-      joinCall(callId, authToken);
+      joinCall(callId, authToken, settings);
     }
   }, [callId, joinCall, authToken]);
+  
+  // Auto-scroll chat to bottom when new messages arrive
+  useEffect(() => {
+    if (chatMessagesRef.current) {
+      chatMessagesRef.current.scrollTop = chatMessagesRef.current.scrollHeight;
+    }
+  }, [chatMessages]);
 
   // Position menu to stay on screen
   useEffect(() => {
@@ -195,12 +220,9 @@ export const CallScreen: React.FC<CallScreenProps> = ({
         
         <div className="chat-section">
           <h2>Chat {myRole === 'Listener' && <span className="role-note">(Listeners cannot chat)</span>}</h2>
-          <div className="chat-messages">
+          <div className="chat-messages" ref={chatMessagesRef}>
             {chatMessages.map((msg) => (
-              <div key={msg.id} className="chat-message">
-                <span className="sender">{msg.senderName}:</span>
-                <span className="content">{msg.content}</span>
-              </div>
+              <ChatMessage key={msg.id} message={msg} settings={mySettings} />
             ))}
           </div>
           
@@ -237,7 +259,20 @@ export const CallScreen: React.FC<CallScreenProps> = ({
         >
           {showCopySuccess ? '✓ Copied!' : '📋 Copy Share Link'}
         </button>
+        <button
+          onClick={() => setShowSettings(true)}
+          className="settings-button"
+        >
+          ⚙️ Settings
+        </button>
       </div>
+      
+      <SettingsModal
+        isOpen={showSettings}
+        onClose={() => setShowSettings(false)}
+        settings={mySettings}
+        onSettingsChange={onUpdateSettings || (() => {})}
+      />
     </div>
   );
 };

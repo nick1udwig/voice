@@ -1,15 +1,20 @@
 import React, { useState } from 'react';
 import { useVoiceStore } from '../store/voice';
-import { startNodeHandshake, Role } from '../../../target/ui/caller-utils';
+import { startNodeHandshake, Role, UserSettings } from '../../../target/ui/caller-utils';
 import { getRoleEmoji } from '../../shared/utils/roleUtils';
+import { SettingsPanel } from '../../shared/components/SettingsPanel';
+import { DEFAULT_SETTINGS } from '../../shared/types/settings';
+import '../../shared/styles/settings.css';
 
 export const SplashScreen: React.FC = () => {
   const [joinLink, setJoinLink] = useState('');
   const [defaultRole, setDefaultRole] = useState<Role>('Chatter');
+  const [settings, setSettings] = useState<UserSettings>({ ...DEFAULT_SETTINGS });
+  const [showSettings, setShowSettings] = useState(false);
   const { createCall, nodeConnected } = useVoiceStore();
 
   const handleCreateCall = async () => {
-    await createCall(defaultRole);
+    await createCall(defaultRole, settings);
   };
 
   const handleJoin = async () => {
@@ -36,14 +41,15 @@ export const SplashScreen: React.FC = () => {
 
       <div className="action-section">
         <h2>Host a Call</h2>
+        <label>Default role for participants:</label>
         <select
           value={defaultRole}
           onChange={(e) => setDefaultRole(e.target.value as Role)}
           className="role-select"
         >
-          <option value="Listener">{getRoleEmoji('Listener')} Listener (default)</option>
-          <option value="Chatter">{getRoleEmoji('Chatter')} Chatter (default)</option>
-          <option value="Speaker">{getRoleEmoji('Speaker')} Speaker (default)</option>
+          <option value="Listener">{getRoleEmoji('Listener')} Listener</option>
+          <option value="Chatter">{getRoleEmoji('Chatter')} Chatter</option>
+          <option value="Speaker">{getRoleEmoji('Speaker')} Speaker</option>
         </select>
         <button onClick={handleCreateCall} className="primary-button">
           Create New Call
@@ -66,6 +72,23 @@ export const SplashScreen: React.FC = () => {
         >
           Join Call
         </button>
+      </div>
+      
+      <div className="action-section">
+        <button 
+          onClick={() => setShowSettings(!showSettings)}
+          className="settings-button"
+        >
+          {showSettings ? 'Hide Settings' : 'Show Settings'}
+        </button>
+        
+        {showSettings && (
+          <SettingsPanel 
+            settings={settings}
+            onSettingsChange={setSettings}
+            isInCall={false}
+          />
+        )}
       </div>
     </div>
   );

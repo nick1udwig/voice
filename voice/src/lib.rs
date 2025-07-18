@@ -71,6 +71,7 @@ pub struct ParticipantInfo {
     pub display_name: String,
     pub role: Role,
     pub is_muted: bool,
+    pub settings: UserSettings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,13 +116,14 @@ pub struct NodeHandshakeResp {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum WsClientMessage {
     #[serde(rename_all = "camelCase")]
-    JoinCall { call_id: String, auth_token: Option<String>, display_name: Option<String> },
+    JoinCall { call_id: String, auth_token: Option<String>, display_name: Option<String>, settings: Option<UserSettings> },
     Chat(String),
     Mute(bool),
     #[serde(rename_all = "camelCase")]
     AudioData { data: String, sample_rate: u32, channels: u32, sequence: Option<u32>, timestamp: Option<u64> },
     #[serde(rename_all = "camelCase")]
     UpdateRole { target_id: String, new_role: Role },
+    UpdateSettings(UserSettings),
     Heartbeat,
 }
 
@@ -173,6 +175,8 @@ pub enum WsServerMessage {
     RoleUpdated(WsRoleUpdate),
     ParticipantMuted(WsParticipantMuted),
     AudioData(WsAudioData),
+    #[serde(rename_all = "camelCase")]
+    SettingsUpdated { participant_id: String, settings: UserSettings },
     Error(String),
     CallEnded,
     CloseConnection, // New message to tell frontend to close its WebSocket
@@ -203,6 +207,14 @@ struct Call {
     host_id: Option<String>, // The participant who mixes audio
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct UserSettings {
+    pub sound_on_user_join: bool,
+    pub sound_on_chat_message: bool,
+    pub show_images_in_chat: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Participant {
     id: String,
@@ -210,6 +222,7 @@ struct Participant {
     role: Role,
     connection_type: ConnectionType,
     is_muted: bool,
+    settings: UserSettings,
 }
 
 #[hyperprocess(
@@ -293,6 +306,7 @@ impl VoiceState {
                 display_name: p.display_name.clone(),
                 role: p.role.clone(),
                 is_muted: p.is_muted,
+                settings: p.settings.clone(),
             })
             .collect();
 
@@ -501,7 +515,7 @@ impl VoiceState {
 // Helper functions for WebSocket handling
 fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientMessage) {
     match msg {
-        WsClientMessage::JoinCall { call_id, auth_token, display_name } => {
+        WsClientMessage::JoinCall { call_id, auth_token, display_name, settings } => {
             // Check if call exists
             if !state.calls.contains_key(&call_id) {
                 send_error_to_channel(channel_id, "Call not found");
@@ -559,6 +573,7 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
                     role,
                     connection_type,
                     is_muted: true,
+                    settings: settings.unwrap_or_default(),
                 };
 
                 // Add participant to call
@@ -586,6 +601,7 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
                         display_name: p.display_name.clone(),
                         role: p.role.clone(),
                         is_muted: p.is_muted,
+                        settings: p.settings.clone(),
                     })
                     .collect();
 
@@ -620,6 +636,7 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
                     display_name: participant.display_name,
                     role: participant.role,
                     is_muted: participant.is_muted,
+                    settings: participant.settings,
                 };
                 broadcast_to_call_except(state, &call_id, channel_id, WsServerMessage::ParticipantJoined(
                     WsParticipantJoined { participant: participant_info }
@@ -777,6 +794,35 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
                     ));
                 } else {
                     send_error_to_channel(channel_id, "Target participant not found");
+                }
+            }
+        }
+        WsClientMessage::UpdateSettings(settings) => {
+            // Update participant's settings
+            if let Some(call) = state.calls.get_mut(&call_id) {
+                if let Some(participant) = call.participants.get_mut(&participant_id) {
+                    participant.settings = settings.clone();
+                    
+                    // Only notify the user themselves and the host (admin)
+                    // Send confirmation back to the user who updated their settings
+                    send_to_channel(channel_id, WsServerMessage::SettingsUpdated {
+                        participant_id: participant_id.clone(),
+                        settings: settings.clone(),
+                    });
+                    
+                    // Also notify the host/admin if they're different from the user
+                    if let Some(host_id) = &call.host_id {
+                        if host_id != &participant_id {
+                            if let Some(host_channel) = state.participant_channels.get(host_id) {
+                                send_to_channel(*host_channel, WsServerMessage::SettingsUpdated {
+                                    participant_id: participant_id.clone(),
+                                    settings,
+                                });
+                            }
+                        }
+                    }
+                } else {
+                    send_error_to_channel(channel_id, "Participant not found");
                 }
             }
         }

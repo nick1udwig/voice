@@ -1,0 +1,115 @@
+.settings-panel {
+  background: var(--card-background, #f9f9f9);
+  border: 1px solid var(--border-color, #ddd);
+  border-radius: 8px;
+  padding: 1.5rem;
+  margin: 1rem 0;
+}
+
+.settings-panel h3 {
+  margin: 0 0 1rem 0;
+  color: var(--text-primary, #333);
+}
+
+.settings-section {
+  margin-bottom: 1.5rem;
+}
+
+.settings-section:last-child {
+  margin-bottom: 0;
+}
+
+.settings-section h4 {
+  margin: 0 0 0.75rem 0;
+  font-size: 0.9rem;
+  color: var(--text-secondary, #666);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.settings-toggle {
+  display: flex;
+  align-items: center;
+  padding: 0.5rem 0;
+  cursor: pointer;
+  user-select: none;
+}
+
+.settings-toggle:hover {
+  background: rgba(0, 0, 0, 0.02);
+  margin: 0 -0.5rem;
+  padding: 0.5rem;
+}
+
+.settings-toggle input[type="checkbox"] {
+  margin-right: 0.75rem;
+  cursor: pointer;
+}
+
+.settings-toggle span {
+  color: var(--text-primary, #333);
+}
+
+.settings-note {
+  margin-top: 1rem;
+  padding: 0.75rem;
+  background: rgba(0, 123, 255, 0.1);
+  border-radius: 4px;
+  font-size: 0.9rem;
+  color: var(--text-secondary, #666);
+}
+
+/* Settings button in call screen */
+.settings-button {
+  padding: 0.5rem 1rem;
+  background-color: var(--button-secondary, #6c757d);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.875rem;
+}
+
+.settings-button:hover {
+  background-color: var(--button-secondary-hover, #5a6268);
+}
+
+/* Settings modal */
+.settings-modal {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.settings-modal-content {
+  background: white;
+  border-radius: 8px;
+  padding: 2rem;
+  max-width: 500px;
+  width: 90%;
+  max-height: 80vh;
+  overflow-y: auto;
+  position: relative;
+}
+
+.settings-modal-close {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  background: none;
+  border: none;
+  font-size: 1.5rem;
+  cursor: pointer;
+  color: var(--text-secondary, #666);
+}
+
+.settings-modal-close:hover {
+  color: var(--text-primary, #333);
+}

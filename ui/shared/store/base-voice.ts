@@ -1,5 +1,7 @@
-import { CallInfo, ParticipantInfo, ChatMessage, Role } from '../../../target/ui/caller-utils';
+import { CallInfo, ParticipantInfo, ChatMessage, Role, UserSettings } from '../../../target/ui/caller-utils';
 import { AudioServiceV3 } from '../services/audio-service-v3';
+import { DEFAULT_SETTINGS } from '../types/settings';
+import { notificationSounds } from '../utils/sounds';
 
 export interface BaseVoiceState {
   // Connection state
@@ -26,15 +28,19 @@ export interface BaseVoiceState {
   audioService: AudioServiceV3 | null;
   audioLevels: Map<string, number>;
   speakingStates: Map<string, boolean>;
+  
+  // Settings
+  mySettings: UserSettings;
 }
 
 export interface BaseVoiceActions {
   // Core actions
-  joinCall: (callId: string, authToken?: string | null) => Promise<void>;
+  joinCall: (callId: string, authToken?: string | null, settings?: UserSettings) => Promise<void>;
   leaveCall: () => Promise<void>;
   sendChatMessage: (content: string) => void;
   toggleMute: () => void;
   updateRole: (targetId: string, newRole: Role) => void;
+  updateSettings: (settings: UserSettings) => void;
   handleWebSocketMessage: (message: any) => void;
   connectWebSocket: (url: string) => void;
   disconnect: () => void;
@@ -66,9 +72,10 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
   audioLevels: new Map(),
   speakingStates: new Map(),
   callEnded: false,
+  mySettings: { ...DEFAULT_SETTINGS },
 
   // Actions
-  joinCall: async (callId: string, authToken?: string | null) => {
+  joinCall: async (callId: string, authToken?: string | null, settings?: UserSettings) => {
     try {
       const BASE_URL = import.meta.env.BASE_URL;
       if ((window as any).our) (window as any).our.process = BASE_URL?.replace("/", "");
@@ -93,12 +100,13 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
         
 
         console.log(`joining with auth token ${nodeAuthToken}`);
-        // Send JoinCall message with optional auth token
+        // Send JoinCall message with optional auth token and settings
         const joinMessage = {
           JoinCall: {
             callId: callId,
             authToken: nodeAuthToken,
-            displayName: null
+            displayName: null,
+            settings: settings || get().mySettings
           }
         };
 
@@ -200,6 +208,22 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
       console.error('[VoiceStore] Cannot update role - not connected or not admin');
     }
   },
+  
+  updateSettings: (settings: UserSettings) => {
+    const ws = get().wsConnection;
+    
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      // Update local state immediately
+      set({ mySettings: settings });
+      
+      // Send to server
+      ws.send(JSON.stringify({
+        UpdateSettings: settings
+      }));
+    } else {
+      console.error('[VoiceStore] Cannot update settings - not connected');
+    }
+  },
 
   handleWebSocketMessage: (message: any) => {
     console.log('WebSocket message:', message);
@@ -219,6 +243,12 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
       set((state: BaseVoiceState) => ({
         participants: new Map(state.participants).set(participant.id, participant)
       }));
+      
+      // Play sound if enabled in settings
+      const settings = get().mySettings;
+      if (settings.soundOnUserJoin) {
+        notificationSounds.playUserJoinSound();
+      }
     }
 
     if (message.ParticipantLeft) {
@@ -235,6 +265,13 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
       set((state: BaseVoiceState) => ({
         chatMessages: [...state.chatMessages, chatMessage]
       }));
+      
+      // Play sound if enabled and not from ourselves
+      const settings = get().mySettings;
+      const myId = get().myParticipantId;
+      if (settings.soundOnChatMessage && chatMessage.senderId !== myId) {
+        notificationSounds.playChatMessageSound();
+      }
     }
 
     if (message.RoleUpdated) {
@@ -297,6 +334,8 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
       const callId = window.location.pathname.split('/').pop() || '';
 
       // Set initial mute state - everyone starts muted
+      // Find our own participant info to get settings
+      const myParticipant = participants.find((p: ParticipantInfo) => p.id === participantId);
       
       set({
         myParticipantId: participantId,
@@ -306,6 +345,7 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
         hostId: hostId || null,
         isMuted: true, // Everyone starts muted
         isAuthenticated: true, // Mark as authenticated after JoinSuccess
+        mySettings: myParticipant?.settings || { ...DEFAULT_SETTINGS },
         currentCall: {
           id: callId,
           createdAt: Date.now(),
@@ -384,6 +424,27 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
         console.log('[VoiceStore] Closing WebSocket connection as requested by server');
         ws.close();
       }
+    }
+    
+    // Handle settings updates
+    if (message.SettingsUpdated) {
+      const { participantId, settings } = message.SettingsUpdated;
+      
+      // Update our own settings if it's for us
+      if (participantId === get().myParticipantId) {
+        set({ mySettings: settings });
+      }
+      
+      // Update participant info in the participants map
+      set((state: BaseVoiceState) => {
+        const participant = state.participants.get(participantId);
+        if (participant) {
+          const newParticipants = new Map(state.participants);
+          newParticipants.set(participantId, { ...participant, settings });
+          return { participants: newParticipants };
+        }
+        return state;
+      });
     }
   },
 
