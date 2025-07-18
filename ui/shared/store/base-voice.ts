@@ -121,7 +121,9 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
 
       ws.onclose = () => {
         console.log('WebSocket disconnected');
-        set({ wsConnection: null, connectionStatus: 'disconnected', isAuthenticated: false });
+        // Preserve callEnded state when WebSocket closes
+        const currentCallEnded = get().callEnded;
+        set({ wsConnection: null, connectionStatus: 'disconnected', isAuthenticated: false, callEnded: currentCallEnded });
       };
 
       set({ wsConnection: ws, connectionStatus: 'connecting' });
@@ -201,6 +203,8 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
 
   handleWebSocketMessage: (message: any) => {
     console.log('WebSocket message:', message);
+    console.log('WebSocket message type:', typeof message);
+    console.log('WebSocket message keys:', Object.keys(message));
     
     // Log specific important messages
     if (message.CallEnded) {
@@ -348,10 +352,15 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
     }
 
     // Handle call ended
-    if (message.CallEnded) {
+    if (message === 'CallEnded' || message.CallEnded) {
       console.log('[VoiceStore] Call ended by host');
       // Set call ended state to show the screen
+      console.log('[VoiceStore] Setting callEnded to true in CallEnded handler');
       set({ callEnded: true });
+      
+      // Verify the state was actually set
+      const newState = get();
+      console.log('[VoiceStore] After set, callEnded is:', newState.callEnded);
       
       // Clean up audio first
       get().cleanupAudio();
@@ -360,8 +369,16 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
     }
 
     // Handle close connection request from server
-    if (message.CloseConnection) {
+    if (message === 'CloseConnection' || message.CloseConnection) {
       console.log('[VoiceStore] Server requested WebSocket close');
+      // Set callEnded to true to show the Call Ended screen
+      console.log('[VoiceStore] Setting callEnded to true in CloseConnection handler');
+      set({ callEnded: true });
+      
+      // Verify the state was actually set
+      const stateAfterSet = get();
+      console.log('[VoiceStore] After set, callEnded is:', stateAfterSet.callEnded);
+      
       const ws = get().wsConnection;
       if (ws && ws.readyState === WebSocket.OPEN) {
         console.log('[VoiceStore] Closing WebSocket connection as requested by server');
@@ -393,7 +410,9 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
 
     ws.onclose = () => {
       console.log('WebSocket disconnected');
-      set({ wsConnection: null, connectionStatus: 'disconnected' });
+      // Preserve callEnded state when WebSocket closes
+      const currentCallEnded = get().callEnded;
+      set({ wsConnection: null, connectionStatus: 'disconnected', callEnded: currentCallEnded });
     };
 
     set({ wsConnection: ws, connectionStatus: 'connecting' });

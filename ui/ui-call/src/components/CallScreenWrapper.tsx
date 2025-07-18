@@ -3,7 +3,6 @@ import { CallScreen } from '../../../shared/components/CallScreen/CallScreen';
 import { CallEndedScreen } from '../../../shared/components/CallEndedScreen';
 import { useVoiceStore } from '../store/voice';
 import '../../../shared/styles/call-screen.css';
-import { AudioDebugPanel } from '../../../shared/components/AudioDebugPanel';
 
 // Extend window interface for TypeScript
 declare global {
@@ -37,6 +36,9 @@ export const CallScreenWrapper: React.FC = () => {
     callEnded,
     leaveCall
   } = useVoiceStore();
+
+  // Debug callEnded state
+  console.log('[CallScreenWrapper] Render - callEnded:', callEnded);
 
   const handleLeaveCall = () => {
     // Use the store's leaveCall function which handles showing the call ended screen
@@ -74,7 +76,6 @@ export const CallScreenWrapper: React.FC = () => {
         authToken={authToken}
         speakingParticipants={new Set(Array.from(speakingStates.entries()).filter(([_, isSpeaking]) => isSpeaking).map(([id]) => id))}
       />
-      <AudioDebugPanel />
     </>
   );
 };
