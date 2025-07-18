@@ -14,6 +14,7 @@ export interface BaseVoiceState {
   chatMessages: ChatMessage[];
   myParticipantId: string | null;
   myRole: Role | null;
+  callEnded: boolean;
 
   // Audio state
   localStream: MediaStream | null;
@@ -64,6 +65,7 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
   audioService: null,
   audioLevels: new Map(),
   speakingStates: new Map(),
+  callEnded: false,
 
   // Actions
   joinCall: async (callId: string, authToken?: string | null) => {
@@ -199,6 +201,14 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
 
   handleWebSocketMessage: (message: any) => {
     console.log('WebSocket message:', message);
+    
+    // Log specific important messages
+    if (message.CallEnded) {
+      console.log('[VoiceStore] Received CallEnded message');
+    }
+    if (message.CloseConnection) {
+      console.log('[VoiceStore] Received CloseConnection message');
+    }
 
     if (message.ParticipantJoined) {
       const participant = message.ParticipantJoined.participant;
@@ -339,20 +349,24 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
 
     // Handle call ended
     if (message.CallEnded) {
-      console.log('[VoiceStore] Call ended by host, redirecting to home');
+      console.log('[VoiceStore] Call ended by host');
+      // Set call ended state to show the screen
+      set({ callEnded: true });
+      
       // Clean up audio first
       get().cleanupAudio();
 
-      // Close WebSocket
+      // Don't redirect immediately - let user see the call ended screen
+    }
+
+    // Handle close connection request from server
+    if (message.CloseConnection) {
+      console.log('[VoiceStore] Server requested WebSocket close');
       const ws = get().wsConnection;
-      if (ws) {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        console.log('[VoiceStore] Closing WebSocket connection as requested by server');
         ws.close();
       }
-
-      // Redirect to home page
-      setTimeout(() => {
-        window.location.href = '/';
-      }, 100);
     }
   },
 
@@ -392,6 +406,21 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
       return;
     }
 
+    // Show call ended screen for the user who clicked Leave
+    set({ callEnded: true });
+
+    // FIRST: Close WebSocket connection immediately to prevent race conditions
+    const ws = state.wsConnection;
+    if (ws) {
+      console.log('[VoiceStore] Closing WebSocket connection before leave API call');
+      ws.close();
+      // Clear the connection state immediately
+      set({ wsConnection: null, connectionStatus: 'disconnected', isAuthenticated: false });
+    }
+
+    // Clean up audio immediately to stop any ongoing streams
+    get().cleanupAudio();
+
     try {
       // Import the API function
       const { leaveCall: leaveCallApi } = await import('../../../target/ui/caller-utils');
@@ -407,8 +436,14 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
       console.error('[VoiceStore] Failed to call leave API:', error);
     }
 
-    // Always disconnect websocket and clean up, regardless of API call success
-    get().disconnect();
+    // Clean up remaining state but keep callEnded: true
+    set({
+      currentCall: null,
+      participants: new Map(),
+      chatMessages: [],
+      myParticipantId: null,
+      myRole: null
+    });
   },
 
   disconnect: () => {

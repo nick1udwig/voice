@@ -1,5 +1,6 @@
 import React from 'react';
 import { CallScreen } from '../../../shared/components/CallScreen/CallScreen';
+import { CallEndedScreen } from '../../../shared/components/CallEndedScreen';
 import { useVoiceStore } from '../store/voice';
 import '../../../shared/styles/call-screen.css';
 import { AudioDebugPanel } from '../../../shared/components/AudioDebugPanel';
@@ -32,12 +33,14 @@ export const CallScreenWrapper: React.FC = () => {
     sendChatMessage,
     updateRole,
     isNodeConnection,
-    speakingStates
+    speakingStates,
+    callEnded,
+    leaveCall
   } = useVoiceStore();
 
   const handleLeaveCall = () => {
-    // Redirect back to main app or close window
-    window.location.href = '/';
+    // Use the store's leaveCall function which handles showing the call ended screen
+    leaveCall();
   };
 
   if (!callId) {
@@ -46,6 +49,11 @@ export const CallScreenWrapper: React.FC = () => {
         <h2>No call ID provided</h2>
       </div>
     );
+  }
+
+  // Show call ended screen if the call has ended
+  if (callEnded) {
+    return <CallEndedScreen />;
   }
 
   return (

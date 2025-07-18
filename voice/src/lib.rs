@@ -175,6 +175,7 @@ pub enum WsServerMessage {
     AudioData(WsAudioData),
     Error(String),
     CallEnded,
+    CloseConnection, // New message to tell frontend to close its WebSocket
 }
 
 
@@ -323,26 +324,54 @@ impl VoiceState {
         // Check if this is the host leaving
         let is_host_leaving = host_id.as_ref() == Some(&request.participant_id);
 
-        // If host is leaving, end call immediately
-        if is_host_leaving {
-            kiprintln!("Host {} is leaving call {}, ending call", request.participant_id, request.call_id);
+        // FIRST: Check if we should end the call (but don't remove participant yet if host)
+        let should_end_call = if let Some(call) = self.calls.get(&request.call_id) {
+            let would_be_empty = call.participants.len() <= 1 && call.participants.contains_key(&request.participant_id);
+            would_be_empty || is_host_leaving
+        } else {
+            false
+        };
 
-            // Disconnect all WebSocket connections first
+        // If not ending the call, remove the participant normally
+        if !should_end_call {
+            if let Some(call) = self.calls.get_mut(&request.call_id) {
+                call.participants.remove(&request.participant_id);
+            }
+            
+            // Clean up connection mappings for this participant
+            if let Some(channel_id) = self.participant_channels.remove(&request.participant_id) {
+                self.connections.remove(&channel_id);
+                if let Some(channels) = self.call_channels.get_mut(&request.call_id) {
+                    channels.remove(&channel_id);
+                }
+            }
+        }
+
+        // Remove from audio processor
+        if let Some(processor) = self.audio_processors.get(&request.call_id) {
+            if let Ok(mut proc) = processor.lock() {
+                proc.remove_participant(&request.participant_id);
+            }
+        }
+
+        if should_end_call {
+            kiprintln!("Ending call {} - host leaving: {} or would be empty", request.call_id, is_host_leaving);
+            
+            // Log remaining participants before disconnecting
+            if let Some(channels) = self.call_channels.get(&request.call_id) {
+                kiprintln!("Call has {} channels to notify", channels.len());
+                for channel in channels {
+                    kiprintln!("  - Channel {} is still connected", channel);
+                }
+            }
+
+            // Disconnect all remaining WebSocket connections
             disconnect_all_call_channels(&self, &request.call_id);
 
-            // Unserve the UI
+            // Unserve the UI - now with participant already removed
             let call_path = format!("/call/{}", request.call_id);
             if let Err(e) = hyperware_app_common::get_server().unwrap().unserve_ui("ui-call", vec![&call_path]) {
                 kiprintln!("Failed to unserve UI for call {}: {:?}", request.call_id, e);
-            }
-
-            // Clean up connection mappings for all participants
-            if let Some(call) = self.calls.get(&request.call_id) {
-                for participant_id in call.participants.keys() {
-                    if let Some(channel_id) = self.participant_channels.remove(participant_id) {
-                        self.connections.remove(&channel_id);
-                    }
-                }
             }
 
             // Clean up all state
@@ -351,23 +380,9 @@ impl VoiceState {
             self.call_channels.remove(&request.call_id);
             self.audio_processors.remove(&request.call_id);
         } else {
-            // Regular participant leaving
-            if let Some(call) = self.calls.get_mut(&request.call_id) {
-                call.participants.remove(&request.participant_id);
-
-                // Check if call is now empty
-                // Notify remaining participants
-                let notification = WsServerMessage::ParticipantLeft { participant_id: request.participant_id.clone() };
-                broadcast_to_call(&self, &request.call_id, notification);
-            }
-
-            // Clean up connection mappings
-            if let Some(channel_id) = self.participant_channels.remove(&request.participant_id) {
-                self.connections.remove(&channel_id);
-                if let Some(channels) = self.call_channels.get_mut(&request.call_id) {
-                    channels.remove(&channel_id);
-                }
-            }
+            // Notify remaining participants
+            let notification = WsServerMessage::ParticipantLeft { participant_id: request.participant_id.clone() };
+            broadcast_to_call(&self, &request.call_id, notification);
         }
 
         Ok(())
@@ -455,7 +470,7 @@ impl VoiceState {
         match message_type {
             WsMessageType::Text => {
                 if let Ok(message) = String::from_utf8(blob.bytes.clone()) {
-                    kiprintln!("Received WebSocket text message from channel {} (connections: {:?}): {}", 
+                    kiprintln!("Received WebSocket text message from channel {} (connections: {:?}): {}",
                         channel_id, self.connections.keys().collect::<Vec<_>>(), message);
 
                     // Parse the message as our client message type
@@ -580,7 +595,7 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
                 let processor = state.audio_processors.entry(call_id.clone())
                     .or_insert_with(|| Arc::new(Mutex::new(AudioProcessor::new())))
                     .clone();
-                
+
                 if let Ok(mut proc) = processor.lock() {
                     if let Err(e) = proc.add_participant(participant_id.clone()) {
                         kiprintln!("Failed to add participant to audio processor on join: {}", e);
@@ -588,7 +603,7 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
                         kiprintln!("Added participant {} to audio processor on join (role: {:?})", participant_id, participant.role);
                     }
                 };
-                
+
                 // Send join success with host info
                 send_to_channel(channel_id, WsServerMessage::JoinSuccess {
                     participant_id: participant_id.clone(),
@@ -694,12 +709,12 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
 
             // Decode base64 to bytes
             let audio_bytes = base64_to_bytes(&data);
-            
+
             // Get or create audio processor for this call
             let processor = state.audio_processors.entry(call_id.clone())
                 .or_insert_with(|| Arc::new(Mutex::new(AudioProcessor::new())))
                 .clone();
-            
+
             // Process audio in the audio processor
             if let Ok(mut proc) = processor.lock() {
                 // Ensure participant is registered
@@ -709,17 +724,17 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
                         return;
                     }
                 }
-                
+
                 // Decode Opus data
                 match proc.decode_audio(&participant_id, &audio_bytes) {
                     Ok(decoded_audio) => {
                         // Update participant's audio buffer
                         proc.update_participant_audio(&participant_id, decoded_audio);
-                        
+
                         // Create personalized outputs for all participants
                         let mixes = proc.create_mix_minus_outputs();
                         kiprintln!("Created {} personalized outputs", mixes.len());
-                        
+
                         // Send personalized mix to each participant
                         for (target_id, mix_data) in &mixes {
                             kiprintln!("Sending personalized mix to: {}, data size: {}", target_id, mix_data.len());
@@ -741,18 +756,18 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
                 send_error_to_channel(channel_id, "No permission to change roles");
                 return;
             }
-            
+
             if let Some(call) = state.calls.get_mut(&call_id) {
                 // Check if target exists
                 if let Some(target_participant) = call.participants.get_mut(&target_id) {
                     let old_role = target_participant.role.clone();
-                    
+
                     // Update the role
                     target_participant.role = new_role.clone();
-                    
+
                     // Log role change for debugging
                     kiprintln!("Role updated for participant {}: {:?} -> {:?}", target_id, old_role, new_role);
-                    
+
                     // Broadcast role update to all participants
                     broadcast_to_call(state, &call_id, WsServerMessage::RoleUpdated(
                         WsRoleUpdate {
@@ -882,6 +897,7 @@ fn handle_disconnect(state: &mut VoiceState, channel_id: u32) {
             }
         }
     }
+    kiprintln!("Done disconnecting {channel_id}");
 }
 
 fn find_participant_call(state: &VoiceState, participant_id: &str) -> Option<(String, Role)> {
@@ -959,17 +975,17 @@ fn disconnect_all_call_channels(state: &VoiceState, call_id: &str) {
         kiprintln!("Disconnecting {} WebSocket channels for call {}", channels.len(), call_id);
 
         // First send CallEnded message to all participants
+        // We send this first so clients can show the "Call Ended" screen
         for &channel_id in channels {
+            kiprintln!("Sending CallEnded to channel {}", channel_id);
             send_to_channel(channel_id, WsServerMessage::CallEnded);
         }
 
-        // Then send WebSocket close message to trigger client disconnection
+        // Then send CloseConnection message to tell clients to close their WebSocket
+        // Send these as a separate pass to ensure CallEnded is queued first
         for &channel_id in channels {
-            let blob = LazyLoadBlob {
-                mime: None,
-                bytes: vec![],
-            };
-            send_ws_push(channel_id, WsMessageType::Close, blob);
+            kiprintln!("Sending CloseConnection to channel {}", channel_id);
+            send_to_channel(channel_id, WsServerMessage::CloseConnection);
         }
     }
 }
@@ -1001,7 +1017,7 @@ fn send_audio_to_participant(state: &VoiceState, participant_id: &str, audio_dat
 
 fn broadcast_to_non_speakers(state: &VoiceState, call_id: &str, audio_data: Vec<u8>, sequence: Option<u32>, timestamp: Option<u64>) {
     kiprintln!("Broadcasting to non-speakers in call {}, audio data size: {}", call_id, audio_data.len());
-    
+
     // Get the call and find all non-speaking participants (Listeners and Chatters)
     if let Some(call) = state.calls.get(call_id) {
         let mut non_speaker_count = 0;
