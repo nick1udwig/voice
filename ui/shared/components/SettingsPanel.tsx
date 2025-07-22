@@ -1,17 +1,30 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { UserSettings } from '../../../target/ui/caller-utils';
 
 interface SettingsPanelProps {
   settings: UserSettings;
   onSettingsChange: (settings: UserSettings) => void;
   isInCall?: boolean;
+  onUpdateAvatar?: (avatarUrl: string | null) => void;
 }
 
 export const SettingsPanel: React.FC<SettingsPanelProps> = ({ 
   settings, 
   onSettingsChange,
-  isInCall = false 
+  isInCall = false,
+  onUpdateAvatar
 }) => {
+  const [avatarUrl, setAvatarUrl] = useState('');
+  const [localAvatarUrl, setLocalAvatarUrl] = useState('');
+  
+  // Load saved avatar URL when component mounts
+  React.useEffect(() => {
+    const savedUrl = localStorage.getItem('avatarUrl');
+    if (savedUrl) {
+      setLocalAvatarUrl(savedUrl);
+      setAvatarUrl(savedUrl);
+    }
+  }, []);
   const handleToggle = (key: keyof UserSettings) => {
     onSettingsChange({
       ...settings,
@@ -65,6 +78,64 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
           />
           <span>Show images in chat</span>
         </label>
+      </div>
+      
+      <div className="settings-section">
+        <h4>Display Settings</h4>
+        
+        <label className="settings-toggle">
+          <input
+            type="checkbox"
+            checked={settings.showAvatars}
+            onChange={() => handleToggle('showAvatars')}
+          />
+          <span>Show participant avatars</span>
+        </label>
+        
+        {onUpdateAvatar && (
+          <div className="avatar-setting">
+            <label>Avatar Image URL:</label>
+            <div className="avatar-input-group">
+              <input
+                type="text"
+                value={avatarUrl}
+                onChange={(e) => setAvatarUrl(e.target.value)}
+                placeholder="Enter image URL"
+                className="avatar-url-input"
+              />
+              <button 
+                onClick={() => {
+                  if (avatarUrl.trim()) {
+                    onUpdateAvatar(avatarUrl.trim());
+                    if (!isInCall) {
+                      localStorage.setItem('avatarUrl', avatarUrl.trim());
+                    }
+                  } else {
+                    onUpdateAvatar(null);
+                    if (!isInCall) {
+                      localStorage.removeItem('avatarUrl');
+                    }
+                  }
+                  if (!isInCall) {
+                    // Keep the value in the input when not in call
+                    setLocalAvatarUrl(avatarUrl.trim());
+                  } else {
+                    // Clear the input when in call
+                    setAvatarUrl('');
+                  }
+                }}
+                className="avatar-update-button"
+              >
+                {isInCall ? 'Update Avatar' : 'Set Avatar'}
+              </button>
+            </div>
+            {!isInCall && localAvatarUrl && (
+              <div className="avatar-preview">
+                <img src={localAvatarUrl} alt="Avatar preview" />
+              </div>
+            )}
+          </div>
+        )}
       </div>
       
       {!isInCall && (

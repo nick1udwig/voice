@@ -45,8 +45,16 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message, settings }) =
     );
   };
   
+  const timestamp = new Date(message.timestamp);
+  const timeString = timestamp.toLocaleTimeString('en-US', { 
+    hour12: false, 
+    hour: '2-digit', 
+    minute: '2-digit' 
+  });
+  
   return (
     <div className="chat-message">
+      <span className="timestamp">[{timeString}]</span>
       <span className="sender">{message.senderName}:</span>
       {renderContent()}
     </div>

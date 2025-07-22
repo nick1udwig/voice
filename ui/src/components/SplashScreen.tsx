@@ -10,6 +10,7 @@ export const SplashScreen: React.FC = () => {
   const [joinLink, setJoinLink] = useState('');
   const [defaultRole, setDefaultRole] = useState<Role>('Chatter');
   const [settings, setSettings] = useState<UserSettings>({ ...DEFAULT_SETTINGS });
+  const [avatarUrl, setAvatarUrl] = useState<string>('');
   const [showSettings, setShowSettings] = useState(false);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const { createCall, nodeConnected } = useVoiceStore();
@@ -21,6 +22,12 @@ export const SplashScreen: React.FC = () => {
         const hostSettings = await getHostSettings();
         setSettings(hostSettings);
         setSettingsLoaded(true);
+        
+        // Load saved avatar URL from localStorage
+        const savedAvatarUrl = localStorage.getItem('avatarUrl');
+        if (savedAvatarUrl) {
+          setAvatarUrl(savedAvatarUrl);
+        }
       } catch (error) {
         console.error('Failed to load host settings:', error);
         // Use defaults if loading fails
@@ -114,6 +121,15 @@ export const SplashScreen: React.FC = () => {
         onClose={() => setShowSettings(false)}
         settings={settings}
         onSettingsChange={handleSettingsChange}
+        onUpdateAvatar={(url) => {
+          setAvatarUrl(url || '');
+          // Save to localStorage for persistence
+          if (url) {
+            localStorage.setItem('avatarUrl', url);
+          } else {
+            localStorage.removeItem('avatarUrl');
+          }
+        }}
       />
     </div>
   );

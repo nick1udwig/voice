@@ -22,6 +22,7 @@ export const CallScreenWrapper: React.FC = () => {
     speakingStates,
     mySettings,
     updateSettings,
+    updateAvatar,
     handleUserInteraction
   } = useVoiceStore();
 
@@ -56,6 +57,7 @@ export const CallScreenWrapper: React.FC = () => {
       speakingParticipants={new Set(Array.from(speakingStates.entries()).filter(([_, isSpeaking]) => isSpeaking).map(([id]) => id))}
       mySettings={mySettings}
       onUpdateSettings={updateSettings}
+      onUpdateAvatar={updateAvatar}
       onUserInteraction={handleUserInteraction}
     />
   );

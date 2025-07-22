@@ -117,6 +117,12 @@ body {
   background-color: var(--role-listener, #f5f5f5);
 }
 
+/* Highlight current user */
+.participant.is-me {
+  border: 2px solid #2196F3;
+  box-shadow: 0 0 5px rgba(33, 150, 243, 0.3);
+}
+
 /* Speaking effect - replaces the green circle */
 .participant.speaking {
   background-color: #4CAF50 !important;
@@ -149,20 +155,52 @@ body {
   align-items: center;
   gap: 0.5rem;
   flex: 1;
+  min-width: 0; /* Allow text to truncate */
 }
 
 .participant-name {
   font-weight: bold;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
 }
 
 .participant-role {
   font-size: 1.2rem;
   cursor: default;
   user-select: none;
+  flex-shrink: 0;
+}
+
+/* Clickable role icon for admins */
+.participant-role.clickable {
+  cursor: pointer;
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 1.2rem;
+  transition: transform 0.2s ease;
+}
+
+.participant-role.clickable:hover {
+  transform: scale(1.2);
 }
 
 .muted-indicator {
-  margin-left: 0.5rem;
+  margin-left: auto;
+  flex-shrink: 0;
+  width: 1.5em;
+  text-align: center;
+}
+
+/* Avatar styles */
+.participant-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
 }
 
 /* Admin controls */
@@ -197,7 +235,7 @@ body {
 .role-menu {
   position: absolute;
   top: 100%;
-  right: 0;
+  left: 0;
   background: var(--dropdown-bg, white);
   color: var(--dropdown-text, black);
   border: 1px solid var(--border-color, #ddd);
@@ -293,6 +331,12 @@ body {
 .chat-message {
   margin-bottom: 0.5rem;
   text-align: left;
+}
+
+.chat-message .timestamp {
+  color: var(--text-secondary, #666);
+  font-size: 0.9em;
+  margin-right: 0.5rem;
 }
 
 .chat-message .sender {

@@ -16,6 +16,7 @@ interface CallScreenProps {
   onSendMessage: (message: string) => void;
   onUpdateRole: (targetId: string, newRole: Role) => void;
   onUpdateSettings?: (settings: UserSettings) => void;
+  onUpdateAvatar?: (avatarUrl: string | null) => void;
   nodeConnected?: boolean;
   joinCall: (callId: string, authToken?: string | null, settings?: UserSettings) => void;
   authToken?: string | null;
@@ -42,6 +43,7 @@ export const CallScreen: React.FC<CallScreenProps> = ({
   speakingParticipants = new Set(),
   mySettings,
   onUpdateSettings,
+  onUpdateAvatar,
   onUserInteraction
 }) => {
   const [message, setMessage] = useState('');
@@ -181,41 +183,46 @@ export const CallScreen: React.FC<CallScreenProps> = ({
               const isMe = participant.id === myParticipantId;
               
               return (
-                <li key={participant.id} className={`participant ${participant.role?.toLowerCase() || 'listener'} ${isSpeaking ? 'speaking' : ''}`}>
+                <li key={participant.id} className={`participant ${participant.role?.toLowerCase() || 'listener'} ${isSpeaking ? 'speaking' : ''} ${isMe ? 'is-me' : ''}`}>
                   <div className="participant-info">
-                    <span className="participant-name">{participant.displayName}</span>
-                    <span className="participant-role" title={participant.role || 'Listener'}>
-                      {getRoleEmoji(participant.role)}
-                    </span>
-                    {participant.isMuted && <span className="muted-indicator">🔇</span>}
+                    {myRole === 'Admin' && !isMe ? (
+                      <button
+                        className="participant-role clickable"
+                        title="Click to change role"
+                        onClick={() => setRoleMenuOpen(roleMenuOpen === participant.id ? null : participant.id)}
+                      >
+                        {getRoleEmoji(participant.role)}
+                      </button>
+                    ) : (
+                      <span className="participant-role" title={participant.role || 'Listener'}>
+                        {getRoleEmoji(participant.role)}
+                      </span>
+                    )}
+                    {mySettings.showAvatars && participant.avatarUrl && (
+                      <img 
+                        src={participant.avatarUrl} 
+                        alt={`${participant.displayName}'s avatar`}
+                        className="participant-avatar"
+                      />
+                    )}
+                    <span className="participant-name">{participant.displayName}{isMe && ' (You)'}</span>
+                    <span className="muted-indicator">{participant.isMuted ? '🔇' : ''}</span>
                   </div>
                   
-                  {myRole === 'Admin' && !isMe && (
-                    <div className="admin-controls">
-                      <button
-                        className="role-menu-button"
-                        onClick={() => setRoleMenuOpen(roleMenuOpen === participant.id ? null : participant.id)}
-                        title="Manage participant"
-                      >
-                        ⚙️
-                      </button>
-                      
-                      {roleMenuOpen === participant.id && (
-                        <div ref={menuRef}>
-                          <div className="role-menu" data-participant-id={participant.id}>
-                            <div className="role-menu-header">Change Role</div>
-                            {ROLE_OPTIONS.map(role => (
-                              <button
-                                key={role}
-                                className={`role-option ${participant.role === role ? 'current' : ''}`}
-                                onClick={() => handleChangeRole(participant.id, role)}
-                              >
-                                {getRoleEmoji(role)} {role}
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                      )}
+                  {myRole === 'Admin' && !isMe && roleMenuOpen === participant.id && (
+                    <div ref={menuRef}>
+                      <div className="role-menu" data-participant-id={participant.id}>
+                        <div className="role-menu-header">Change Role</div>
+                        {ROLE_OPTIONS.map(role => (
+                          <button
+                            key={role}
+                            className={`role-option ${participant.role === role ? 'current' : ''}`}
+                            onClick={() => handleChangeRole(participant.id, role)}
+                          >
+                            {getRoleEmoji(role)} {role}
+                          </button>
+                        ))}
+                      </div>
                     </div>
                   )}
                 </li>
@@ -253,7 +260,6 @@ export const CallScreen: React.FC<CallScreenProps> = ({
             {isMuted ? '🔇 Unmute' : '🎤 Mute'}
           </button>
         )}
-        {myRole && <span className="my-role">Your Role: {getRoleEmoji(myRole)} {myRole}</span>}
         <button 
           onClick={() => {
             const shareLink = `${window.location.origin}/voice:voice:sys/call/${callId}`;
@@ -278,6 +284,7 @@ export const CallScreen: React.FC<CallScreenProps> = ({
         onClose={() => setShowSettings(false)}
         settings={mySettings}
         onSettingsChange={onUpdateSettings || (() => {})}
+        onUpdateAvatar={onUpdateAvatar}
       />
     </div>
   );

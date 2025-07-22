@@ -72,6 +72,7 @@ pub struct ParticipantInfo {
     pub role: Role,
     pub is_muted: bool,
     pub settings: UserSettings,
+    pub avatar_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -116,7 +117,7 @@ pub struct NodeHandshakeResp {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum WsClientMessage {
     #[serde(rename_all = "camelCase")]
-    JoinCall { call_id: String, auth_token: Option<String>, display_name: Option<String>, settings: Option<UserSettings> },
+    JoinCall { call_id: String, auth_token: Option<String>, display_name: Option<String>, settings: Option<UserSettings>, avatar_url: Option<String> },
     Chat(String),
     Mute(bool),
     #[serde(rename_all = "camelCase")]
@@ -126,6 +127,8 @@ pub enum WsClientMessage {
     UpdateSettings(UserSettings),
     #[serde(rename_all = "camelCase")]
     UpdateSpeakingState { is_speaking: bool },
+    #[serde(rename_all = "camelCase")]
+    UpdateAvatar { avatar_url: Option<String> },
     Heartbeat,
 }
 
@@ -181,6 +184,8 @@ pub enum WsServerMessage {
     SettingsUpdated { participant_id: String, settings: UserSettings },
     #[serde(rename_all = "camelCase")]
     SpeakingStateUpdated { participant_id: String, is_speaking: bool },
+    #[serde(rename_all = "camelCase")]
+    AvatarUpdated { participant_id: String, avatar_url: Option<String> },
     Error(String),
     CallEnded,
     CloseConnection, // New message to tell frontend to close its WebSocket
@@ -221,6 +226,7 @@ pub struct UserSettings {
     pub sound_on_user_leave: bool,
     pub sound_on_chat_message: bool,
     pub show_images_in_chat: bool,
+    pub show_avatars: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -231,6 +237,7 @@ struct Participant {
     connection_type: ConnectionType,
     is_muted: bool,
     settings: UserSettings,
+    avatar_url: Option<String>,
 }
 
 #[hyperprocess(
@@ -315,6 +322,7 @@ impl VoiceState {
                 role: p.role.clone(),
                 is_muted: p.is_muted,
                 settings: p.settings.clone(),
+                avatar_url: p.avatar_url.clone(),
             })
             .collect();
 
@@ -537,7 +545,7 @@ impl VoiceState {
 // Helper functions for WebSocket handling
 fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientMessage) {
     match msg {
-        WsClientMessage::JoinCall { call_id, auth_token, display_name, settings } => {
+        WsClientMessage::JoinCall { call_id, auth_token, display_name, settings, avatar_url } => {
             // Check if call exists
             if !state.calls.contains_key(&call_id) {
                 send_error_to_channel(channel_id, "Call not found");
@@ -596,6 +604,7 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
                     connection_type,
                     is_muted: true,
                     settings: settings.unwrap_or_default(),
+                    avatar_url: avatar_url.clone(),
                 };
 
                 // Add participant to call
@@ -624,6 +633,7 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
                         role: p.role.clone(),
                         is_muted: p.is_muted,
                         settings: p.settings.clone(),
+                        avatar_url: p.avatar_url.clone(),
                     })
                     .collect();
 
@@ -669,6 +679,7 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
                     role: participant.role,
                     is_muted: participant.is_muted,
                     settings: participant.settings,
+                    avatar_url: participant.avatar_url,
                 };
                 broadcast_to_call_except(state, &call_id, channel_id, WsServerMessage::ParticipantJoined(
                     WsParticipantJoined { participant: participant_info }
@@ -927,6 +938,20 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
                 });
             }
         }
+        WsClientMessage::UpdateAvatar { avatar_url } => {
+            // Update participant's avatar
+            if let Some(call) = state.calls.get_mut(&call_id) {
+                if let Some(participant) = call.participants.get_mut(&participant_id) {
+                    participant.avatar_url = avatar_url.clone();
+                    
+                    // Broadcast avatar update to all participants
+                    broadcast_to_call(state, &call_id, WsServerMessage::AvatarUpdated {
+                        participant_id: participant_id.clone(),
+                        avatar_url: avatar_url.clone(),
+                    });
+                }
+            }
+        }
         WsClientMessage::Heartbeat => {
             // Keep connection alive - no action needed
         }
@@ -969,7 +994,7 @@ fn generate_id() -> String {
 fn current_timestamp() -> Result<u64, String> {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
+        .map(|d| d.as_millis() as u64)
         .map_err(|e| e.to_string())
 }
 

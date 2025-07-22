@@ -7,13 +7,15 @@ interface SettingsModalProps {
   onClose: () => void;
   settings: UserSettings;
   onSettingsChange: (settings: UserSettings) => void;
+  onUpdateAvatar?: (avatarUrl: string | null) => void;
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
   isOpen,
   onClose,
   settings,
-  onSettingsChange
+  onSettingsChange,
+  onUpdateAvatar
 }) => {
   if (!isOpen) return null;
 
@@ -33,6 +35,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           settings={settings}
           onSettingsChange={onSettingsChange}
           isInCall={true}
+          onUpdateAvatar={onUpdateAvatar}
         />
       </div>
     </div>

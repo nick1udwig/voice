@@ -43,6 +43,7 @@ export interface BaseVoiceActions {
   toggleMute: () => void;
   updateRole: (targetId: string, newRole: Role) => void;
   updateSettings: (settings: UserSettings) => void;
+  updateAvatar: (avatarUrl: string | null) => void;
   handleWebSocketMessage: (message: any) => void;
   connectWebSocket: (url: string) => void;
   disconnect: () => void;
@@ -138,13 +139,17 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
         startHeartbeat();
 
         console.log(`joining with auth token ${nodeAuthToken}`);
+        // Get saved avatar URL from localStorage
+        const savedAvatarUrl = localStorage.getItem('avatarUrl');
+        
         // Send JoinCall message with optional auth token and settings
         const joinMessage = {
           JoinCall: {
             callId: callId,
             authToken: nodeAuthToken,
             displayName: null,
-            settings: settings || get().mySettings
+            settings: settings || get().mySettings,
+            avatarUrl: savedAvatarUrl
           }
         };
 
@@ -268,6 +273,19 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
       }));
     } else {
       console.error('[VoiceStore] Cannot update settings - not connected');
+    }
+  },
+  
+  updateAvatar: (avatarUrl: string | null) => {
+    const ws = get().wsConnection;
+    
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      // Send to server
+      ws.send(JSON.stringify({
+        UpdateAvatar: { avatarUrl: avatarUrl || null }
+      }));
+    } else {
+      console.error('[VoiceStore] Cannot update avatar - not connected');
     }
   },
 
@@ -443,6 +461,21 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
         const newSpeakingStates = new Map(state.speakingStates);
         newSpeakingStates.set(participantId, isSpeaking);
         return { speakingStates: newSpeakingStates };
+      });
+    }
+    
+    // Handle avatar updates
+    if (message.AvatarUpdated) {
+      const { participantId, avatarUrl } = message.AvatarUpdated;
+      set((state: BaseVoiceState) => {
+        const participant = state.participants.get(participantId);
+        if (participant) {
+          const updatedParticipant = { ...participant, avatarUrl };
+          const newParticipants = new Map(state.participants);
+          newParticipants.set(participantId, updatedParticipant);
+          return { participants: newParticipants };
+        }
+        return state;
       });
     }
 
