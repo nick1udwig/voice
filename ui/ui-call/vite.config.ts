@@ -42,9 +42,8 @@ const copyWorkersPlugin = () => {
       try {
         // Copy only files that exist
         const filesToCopy = [
-          ['public/encoderWorker.min.js', 'dist/encoderWorker.min.js'],
-          ['public/decoderWorker.min.js', 'dist/decoderWorker.min.js'],
-          ['public/decoderWorker.min.wasm', 'dist/decoderWorker.min.wasm']
+          ['public/libopus.wasm', 'dist/libopus.wasm'],
+          ['public/libopus.wasm.js', 'dist/libopus.wasm.js']
         ];
         
         for (const [src, dest] of filesToCopy) {

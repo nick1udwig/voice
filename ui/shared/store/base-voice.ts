@@ -9,6 +9,8 @@ export interface BaseVoiceState {
   connectionStatus: 'disconnected' | 'connecting' | 'connected';
   isNodeConnection: boolean;
   isAuthenticated: boolean;
+  heartbeatInterval: NodeJS.Timeout | null;
+  lastHeartbeat: number;
 
   // Call state
   currentCall: CallInfo | null;
@@ -61,6 +63,8 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
   connectionStatus: 'disconnected',
   isNodeConnection: false,
   isAuthenticated: false,
+  heartbeatInterval: null,
+  lastHeartbeat: Date.now(),
   currentCall: null,
   participants: new Map(),
   chatMessages: [],
@@ -98,6 +102,31 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
           isNodeConnection: !!nodeAuthToken
         });
         
+        // Start heartbeat
+        const startHeartbeat = () => {
+          // Clear any existing heartbeat
+          const existingInterval = get().heartbeatInterval;
+          if (existingInterval) {
+            clearInterval(existingInterval);
+          }
+          
+          // Send heartbeat every 30 seconds
+          const interval = setInterval(() => {
+            const currentWs = get().wsConnection;
+            if (currentWs && currentWs.readyState === WebSocket.OPEN) {
+              currentWs.send(JSON.stringify({ Heartbeat: null }));
+              set({ lastHeartbeat: Date.now() });
+            } else {
+              // Stop heartbeat if connection is lost
+              clearInterval(interval);
+              set({ heartbeatInterval: null });
+            }
+          }, 30000);
+          
+          set({ heartbeatInterval: interval });
+        };
+        
+        startHeartbeat();
 
         console.log(`joining with auth token ${nodeAuthToken}`);
         // Send JoinCall message with optional auth token and settings
@@ -129,6 +158,14 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
 
       ws.onclose = () => {
         console.log('WebSocket disconnected');
+        
+        // Clean up heartbeat
+        const interval = get().heartbeatInterval;
+        if (interval) {
+          clearInterval(interval);
+          set({ heartbeatInterval: null });
+        }
+        
         // Preserve callEnded state when WebSocket closes
         const currentCallEnded = get().callEnded;
         set({ wsConnection: null, connectionStatus: 'disconnected', isAuthenticated: false, callEnded: currentCallEnded });
@@ -367,7 +404,6 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
 
     // Handle incoming audio data
     if (message.AudioData) {
-      console.log('[VoiceStore] Received AudioData from:', message.AudioData.participantId);
       const audioService = get().audioService;
       if (audioService) {
         audioService.handleIncomingAudio(message.AudioData.participantId, message.AudioData)
@@ -547,6 +583,13 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
     const ws = get().wsConnection;
     if (ws) {
       ws.close();
+    }
+    
+    // Clean up heartbeat
+    const interval = get().heartbeatInterval;
+    if (interval) {
+      clearInterval(interval);
+      set({ heartbeatInterval: null });
     }
 
     // Clean up audio

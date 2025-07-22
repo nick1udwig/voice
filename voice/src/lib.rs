@@ -732,8 +732,6 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
             }
         }
         WsClientMessage::AudioData { data, sample_rate: _, channels: _, sequence, timestamp } => {
-            kiprintln!("Received audio data from participant: {}", participant_id);
-
             // Check if the participant can speak
             if !matches!(participant_role, Role::Speaker | Role::Admin) {
                 kiprintln!("Participant {} cannot speak (role: {:?})", participant_id, participant_role);
@@ -767,11 +765,9 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
 
                         // Create personalized outputs for all participants
                         let mixes = proc.create_mix_minus_outputs();
-                        kiprintln!("Created {} personalized outputs", mixes.len());
 
                         // Send personalized mix to each participant
                         for (target_id, mix_data) in &mixes {
-                            kiprintln!("Sending personalized mix to: {}, data size: {}", target_id, mix_data.len());
                             send_audio_to_participant(state, target_id, mix_data.clone(), sequence, timestamp);
                         }
                     }
