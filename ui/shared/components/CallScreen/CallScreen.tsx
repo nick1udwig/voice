@@ -22,6 +22,7 @@ interface CallScreenProps {
   myParticipantId?: string;
   speakingParticipants?: Set<string>;
   mySettings: UserSettings;
+  onUserInteraction?: () => void;
 }
 
 export const CallScreen: React.FC<CallScreenProps> = ({
@@ -40,7 +41,8 @@ export const CallScreen: React.FC<CallScreenProps> = ({
   myParticipantId = '',
   speakingParticipants = new Set(),
   mySettings,
-  onUpdateSettings
+  onUpdateSettings,
+  onUserInteraction
 }) => {
   const [message, setMessage] = useState('');
   const [audioResumed, setAudioResumed] = useState(false);
@@ -151,6 +153,10 @@ export const CallScreen: React.FC<CallScreenProps> = ({
       console.log('[CallScreen] First user interaction - resuming audio contexts');
       // This will trigger audio context resume in the audio service
       setAudioResumed(true);
+      // Call the audio service handler if provided
+      if (onUserInteraction) {
+        onUserInteraction();
+      }
     }
   };
 

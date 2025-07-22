@@ -1,6 +1,6 @@
 use hyperprocess_macro::hyperprocess;
 use hyperware_process_lib::http::server::{send_ws_push, WsMessageType};
-use hyperware_process_lib::{kiprintln, LazyLoadBlob, our};
+use hyperware_process_lib::{println, LazyLoadBlob, our};
 use hyperware_app_common::source;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -199,6 +199,8 @@ struct VoiceState {
     host_settings: UserSettings, // Host's default settings
     #[serde(skip)]
     audio_processors: HashMap<String, Arc<Mutex<AudioProcessor>>>, // Per call audio processor
+    #[serde(skip)]
+    participant_output_sequences: HashMap<String, u32>, // Track output sequence numbers per participant
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -294,7 +296,7 @@ impl VoiceState {
             vec![&call_path],
             HttpBindingConfig::default().authenticated(false)
         ) {
-            kiprintln!("Failed to serve UI for call {}: {:?}", call_id, e);
+            println!("Failed to serve UI for call {}: {:?}", call_id, e);
         }
 
         Ok(call_info)
@@ -357,7 +359,7 @@ impl VoiceState {
             if let Some(call) = self.calls.get_mut(&request.call_id) {
                 call.participants.remove(&request.participant_id);
             }
-            
+
             // Clean up connection mappings for this participant
             if let Some(channel_id) = self.participant_channels.remove(&request.participant_id) {
                 self.connections.remove(&channel_id);
@@ -374,14 +376,17 @@ impl VoiceState {
             }
         }
 
+        // Clean up output sequence numbers for this participant
+        self.participant_output_sequences.remove(&request.participant_id);
+
         if should_end_call {
-            kiprintln!("Ending call {} - host leaving: {} or would be empty", request.call_id, is_host_leaving);
-            
+            println!("Ending call {} - host leaving: {} or would be empty", request.call_id, is_host_leaving);
+
             // Log remaining participants before disconnecting
             if let Some(channels) = self.call_channels.get(&request.call_id) {
-                kiprintln!("Call has {} channels to notify", channels.len());
+                println!("Call has {} channels to notify", channels.len());
                 for channel in channels {
-                    kiprintln!("  - Channel {} is still connected", channel);
+                    println!("  - Channel {} is still connected", channel);
                 }
             }
 
@@ -391,7 +396,7 @@ impl VoiceState {
             // Unserve the UI - now with participant already removed
             let call_path = format!("/call/{}", request.call_id);
             if let Err(e) = hyperware_app_common::get_server().unwrap().unserve_ui("ui-call", vec![&call_path]) {
-                kiprintln!("Failed to unserve UI for call {}: {:?}", request.call_id, e);
+                println!("Failed to unserve UI for call {}: {:?}", request.call_id, e);
             }
 
             // Clean up all state
@@ -483,12 +488,12 @@ impl VoiceState {
             auth_token,
         })
     }
-    
+
     #[http(method = "GET", path = "/host-settings")]
     async fn get_host_settings(&self) -> Result<UserSettings, String> {
         Ok(self.host_settings.clone())
     }
-    
+
     #[http(method = "POST", path = "/host-settings")]
     async fn update_host_settings(&mut self, settings: UserSettings) -> Result<(), String> {
         self.host_settings = settings;
@@ -497,11 +502,11 @@ impl VoiceState {
 
     #[ws]
     fn websocket(&mut self, channel_id: u32, message_type: WsMessageType, blob: LazyLoadBlob) {
-        kiprintln!("WebSocket event - channel_id: {}, type: {:?}", channel_id, message_type);
+        println!("WebSocket event - channel_id: {}, type: {:?}", channel_id, message_type);
         match message_type {
             WsMessageType::Text => {
                 if let Ok(message) = String::from_utf8(blob.bytes.clone()) {
-                    kiprintln!("Received WebSocket text message from channel {} (connections: {:?}): {}",
+                    println!("Received WebSocket text message from channel {} (connections: {:?}): {}",
                         channel_id, self.connections.keys().collect::<Vec<_>>(), message);
 
                     // Parse the message as our client message type
@@ -510,18 +515,18 @@ impl VoiceState {
                             handle_client_message(self, channel_id, client_msg);
                         }
                         Err(e) => {
-                            kiprintln!("Failed to parse WebSocket message: {}", e);
+                            println!("Failed to parse WebSocket message: {}", e);
                             send_error_to_channel(channel_id, "Invalid message format");
                         }
                     }
                 }
             }
             WsMessageType::Close => {
-                kiprintln!("WebSocket connection {} closed", channel_id);
+                println!("WebSocket connection {} closed", channel_id);
                 handle_disconnect(self, channel_id);
             }
             _ => {
-                kiprintln!("Received other WebSocket message type: {:?}", message_type);
+                println!("Received other WebSocket message type: {:?}", message_type);
             }
         }
     }
@@ -597,7 +602,7 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
                 call.participants.insert(participant_id.clone(), participant.clone());
 
                 // Store connection mapping
-                kiprintln!("Storing connection - channel_id: {} -> participant_id: {}", channel_id, participant_id);
+                println!("Storing connection - channel_id: {} -> participant_id: {}", channel_id, participant_id);
                 state.connections.insert(channel_id, participant_id.clone());
                 state.participant_channels.insert(participant_id.clone(), channel_id);
 
@@ -631,11 +636,21 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
 
                 if let Ok(mut proc) = processor.lock() {
                     if let Err(e) = proc.add_participant(participant_id.clone()) {
-                        kiprintln!("Failed to add participant to audio processor on join: {}", e);
+                        println!("Failed to add participant to audio processor on join: {}", e);
                     } else {
-                        kiprintln!("Added participant {} to audio processor on join (role: {:?})", participant_id, participant.role);
+                        println!("Added participant {} to audio processor on join (role: {:?})", participant_id, participant.role);
                     }
                 };
+                
+                // Reset output sequence for this participant
+                state.participant_output_sequences.insert(participant_id.clone(), 0);
+                println!("Reset output sequence for participant {} on join", participant_id);
+                
+                // Log current state of all output sequences
+                println!("Current output sequences after join:");
+                for (pid, seq) in &state.participant_output_sequences {
+                    println!("  {} -> {}", pid, seq);
+                }
 
                 // Send join success with host info
                 send_to_channel(channel_id, WsServerMessage::JoinSuccess {
@@ -667,14 +682,14 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
     }
 
     // For all other messages, require authentication
-    kiprintln!("Checking auth for channel_id: {}, connections: {:?}", channel_id, state.connections.keys().collect::<Vec<_>>());
+    println!("Checking auth for channel_id: {}, connections: {:?}", channel_id, state.connections.keys().collect::<Vec<_>>());
     let participant_id = match state.connections.get(&channel_id) {
         Some(id) => {
-            kiprintln!("Found participant_id: {} for channel: {}", id, channel_id);
+            println!("Found participant_id: {} for channel: {}", id, channel_id);
             id.clone()
         },
         None => {
-            kiprintln!("No connection found for channel_id: {}", channel_id);
+            println!("No connection found for channel_id: {}", channel_id);
             send_error_to_channel(channel_id, "Not authenticated");
             return;
         }
@@ -731,18 +746,20 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
                 }
             }
         }
-        WsClientMessage::AudioData { data, sample_rate: _, channels: _, sequence, timestamp } => {
-            kiprintln!("Received audio data from participant: {}", participant_id);
+        WsClientMessage::AudioData { data, sample_rate: _, channels: _, sequence, timestamp: _ } => {
+            println!("AudioData received from {} (role: {:?}), input sequence: {:?}", 
+                     participant_id, participant_role, sequence);
 
             // Check if the participant can speak
             if !matches!(participant_role, Role::Speaker | Role::Admin) {
-                kiprintln!("Participant {} cannot speak (role: {:?})", participant_id, participant_role);
+                println!("Participant {} cannot speak (role: {:?})", participant_id, participant_role);
                 send_error_to_channel(channel_id, "No audio permission");
                 return;
             }
 
             // Decode base64 to bytes
             let audio_bytes = base64_to_bytes(&data);
+            println!("Decoded {} bytes of audio data from {}", audio_bytes.len(), participant_id);
 
             // Get or create audio processor for this call
             let processor = state.audio_processors.entry(call_id.clone())
@@ -750,11 +767,12 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
                 .clone();
 
             // Process audio in the audio processor
-            if let Ok(mut proc) = processor.lock() {
+            let mixes_to_send = if let Ok(mut proc) = processor.lock() {
+                println!("Got audio processor lock for call {}", call_id);
                 // Ensure participant is registered
                 if !proc.has_participant(&participant_id) {
                     if let Err(e) = proc.add_participant(participant_id.clone()) {
-                        kiprintln!("Failed to add participant to audio processor: {}", e);
+                        println!("Failed to add participant to audio processor: {}", e);
                         return;
                     }
                 }
@@ -767,22 +785,78 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
 
                         // Create personalized outputs for all participants
                         let mixes = proc.create_mix_minus_outputs();
-                        kiprintln!("Created {} personalized outputs", mixes.len());
+                        println!("Created {} mixes for call {}", mixes.len(), call_id);
 
-                        // Send personalized mix to each participant
-                        for (target_id, mix_data) in &mixes {
-                            kiprintln!("Sending personalized mix to: {}, data size: {}", target_id, mix_data.len());
-                            send_audio_to_participant(state, target_id, mix_data.clone(), sequence, timestamp);
-                        }
+                        // Return the mixes to send after releasing the lock
+                        Some(mixes)
                     }
                     Err(e) => {
-                        kiprintln!("Failed to decode audio from {}: {}", participant_id, e);
+                        println!("Failed to decode audio from {}: {}", participant_id, e);
                         // Send error to the participant but don't crash
                         send_error_to_channel(channel_id, &format!("Audio decode error: {}", e));
-                        return;
+                        None
                     }
                 }
+            } else {
+                println!("Failed to lock audio processor for call {}", call_id);
+                None
             };
+
+            // Send the mixes after releasing all locks
+            if let Some(mixes) = mixes_to_send {
+                // Prepare all the messages first to avoid multiple mutable borrows
+                let messages_to_send: Vec<(u32, WsServerMessage)> = mixes.into_iter()
+                    .filter_map(|(target_id, mix_data)| {
+                        println!("Sending {} bytes to participant {}", mix_data.len(), target_id);
+
+                        if let Some(&target_channel_id) = state.participant_channels.get(&target_id) {
+                            // Get and increment the sequence number for this participant
+                            let seq = state.participant_output_sequences
+                                .entry(target_id.clone())
+                                .or_insert(0);
+                            let current_seq = *seq;
+                            
+                            // Handle wraparound at u32::MAX
+                            if *seq == u32::MAX {
+                                *seq = 0;
+                                println!("Sequence wraparound for participant {}", target_id);
+                            } else {
+                                *seq += 1;
+                            }
+                            
+                            // Log sequence generation more frequently for debugging
+                            if current_seq % 10 == 0 || current_seq < 5 {
+                                println!("Generated sequence {} for participant {} (next will be {})", 
+                                         current_seq, target_id, *seq);
+                            }
+
+                            // Generate consistent timestamp based on sequence
+                            // 20ms per frame at 48kHz = 960 samples per sequence
+                            let timestamp = (current_seq as u64) * 20; // milliseconds
+
+                            // Use consistent stream ID that the frontend expects
+                            let stream_id = "audio-stream".to_string();
+                            let message = WsServerMessage::AudioData(WsAudioData {
+                                participant_id: stream_id,
+                                data: bytes_to_base64(&mix_data),
+                                sequence: Some(current_seq),
+                                timestamp: Some(timestamp),
+                                sample_rate: Some(48000),
+                                channels: Some(1),
+                            });
+
+                            Some((target_channel_id, message))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
+                // Now send all the messages
+                for (channel_id, message) in messages_to_send {
+                    send_to_channel(channel_id, message);
+                }
+            }
         }
         WsClientMessage::UpdateRole { target_id, new_role } => {
             // Check if requester has admin permission
@@ -800,7 +874,7 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
                     target_participant.role = new_role.clone();
 
                     // Log role change for debugging
-                    kiprintln!("Role updated for participant {}: {:?} -> {:?}", target_id, old_role, new_role);
+                    println!("Role updated for participant {}: {:?} -> {:?}", target_id, old_role, new_role);
 
                     // Broadcast role update to all participants
                     broadcast_to_call(state, &call_id, WsServerMessage::RoleUpdated(
@@ -819,14 +893,14 @@ fn handle_client_message(state: &mut VoiceState, channel_id: u32, msg: WsClientM
             if let Some(call) = state.calls.get_mut(&call_id) {
                 if let Some(participant) = call.participants.get_mut(&participant_id) {
                     participant.settings = settings.clone();
-                    
+
                     // Only notify the user themselves and the host (admin)
                     // Send confirmation back to the user who updated their settings
                     send_to_channel(channel_id, WsServerMessage::SettingsUpdated {
                         participant_id: participant_id.clone(),
                         settings: settings.clone(),
                     });
-                    
+
                     // Also notify the host/admin if they're different from the user
                     if let Some(host_id) = &call.host_id {
                         if host_id != &participant_id {
@@ -904,9 +978,9 @@ fn can_chat(role: &Role) -> bool {
 }
 
 fn handle_disconnect(state: &mut VoiceState, channel_id: u32) {
-    kiprintln!("Handling disconnect for channel_id: {}", channel_id);
+    println!("Handling disconnect for channel_id: {}", channel_id);
     if let Some(participant_id) = state.connections.remove(&channel_id) {
-        kiprintln!("Removed connection for participant: {}", participant_id);
+        println!("Removed connection for participant: {}", participant_id);
         state.participant_channels.remove(&participant_id);
 
         // Find which call this participant is in
@@ -926,6 +1000,9 @@ fn handle_disconnect(state: &mut VoiceState, channel_id: u32) {
                     proc.remove_participant(&participant_id);
                 }
             }
+
+            // Clean up output sequence numbers for this participant
+            state.participant_output_sequences.remove(&participant_id);
 
             // Remove this channel from the call's channel set
             if let Some(channels) = state.call_channels.get_mut(&call_id) {
@@ -947,7 +1024,7 @@ fn handle_disconnect(state: &mut VoiceState, channel_id: u32) {
             };
 
             if should_end_call {
-                kiprintln!("Ending call {} - host leaving: {}", call_id, is_host_leaving);
+                println!("Ending call {} - host leaving: {}", call_id, is_host_leaving);
 
                 // Disconnect all remaining participants
                 disconnect_all_call_channels(state, &call_id);
@@ -955,7 +1032,7 @@ fn handle_disconnect(state: &mut VoiceState, channel_id: u32) {
                 // Unserve the UI
                 let call_path = format!("/call/{}", call_id);
                 if let Err(e) = hyperware_app_common::get_server().unwrap().unserve_ui("ui-call", vec![&call_path]) {
-                    kiprintln!("Failed to unserve UI for call {}: {:?}", call_id, e);
+                    println!("Failed to unserve UI for call {}: {:?}", call_id, e);
                 }
 
                 // Clean up call state - this must happen OUTSIDE the borrow scope
@@ -970,7 +1047,7 @@ fn handle_disconnect(state: &mut VoiceState, channel_id: u32) {
             }
         }
     }
-    kiprintln!("Done disconnecting {channel_id}");
+    println!("Done disconnecting {channel_id}");
 }
 
 fn find_participant_call(state: &VoiceState, participant_id: &str) -> Option<(String, Role)> {
@@ -1045,19 +1122,19 @@ fn send_error_to_channel(channel_id: u32, error: &str) {
 
 fn disconnect_all_call_channels(state: &VoiceState, call_id: &str) {
     if let Some(channels) = state.call_channels.get(call_id) {
-        kiprintln!("Disconnecting {} WebSocket channels for call {}", channels.len(), call_id);
+        println!("Disconnecting {} WebSocket channels for call {}", channels.len(), call_id);
 
         // First send CallEnded message to all participants
         // We send this first so clients can show the "Call Ended" screen
         for &channel_id in channels {
-            kiprintln!("Sending CallEnded to channel {}", channel_id);
+            println!("Sending CallEnded to channel {}", channel_id);
             send_to_channel(channel_id, WsServerMessage::CallEnded);
         }
 
         // Then send CloseConnection message to tell clients to close their WebSocket
         // Send these as a separate pass to ensure CallEnded is queued first
         for &channel_id in channels {
-            kiprintln!("Sending CloseConnection to channel {}", channel_id);
+            println!("Sending CloseConnection to channel {}", channel_id);
             send_to_channel(channel_id, WsServerMessage::CloseConnection);
         }
     }
@@ -1071,37 +1148,20 @@ fn bytes_to_base64(bytes: &[u8]) -> String {
     general_purpose::STANDARD.encode(bytes)
 }
 
-fn send_audio_to_participant(state: &VoiceState, participant_id: &str, audio_data: Vec<u8>, sequence: Option<u32>, timestamp: Option<u64>) {
-    if let Some(&channel_id) = state.participant_channels.get(participant_id) {
-        // Use consistent stream ID that the frontend expects
-        // Since frontend now uses unified decoder/buffer, we can use a simple identifier
-        let stream_id = "audio-stream".to_string();
-        let message = WsServerMessage::AudioData(WsAudioData {
-            participant_id: stream_id,
-            data: bytes_to_base64(&audio_data),
-            sequence,
-            timestamp,
-            sample_rate: Some(48000),
-            channels: Some(1),
-        });
-        send_to_channel(channel_id, message);
-    }
-}
-
 fn broadcast_to_non_speakers(state: &VoiceState, call_id: &str, audio_data: Vec<u8>, sequence: Option<u32>, timestamp: Option<u64>) {
-    kiprintln!("Broadcasting to non-speakers in call {}, audio data size: {}", call_id, audio_data.len());
+    println!("Broadcasting to non-speakers in call {}, audio data size: {}", call_id, audio_data.len());
 
     // Get the call and find all non-speaking participants (Listeners and Chatters)
     if let Some(call) = state.calls.get(call_id) {
         let mut non_speaker_count = 0;
         for (participant_id, participant) in &call.participants {
-            kiprintln!("Checking participant {} with role {:?}", participant_id, participant.role);
+            println!("Checking participant {} with role {:?}", participant_id, participant.role);
             // Send to Listeners and Chatters (they can't speak but need to hear)
             if matches!(participant.role, Role::Listener | Role::Chatter) {
                 non_speaker_count += 1;
                 // Send audio to this participant
                 if let Some(&channel_id) = state.participant_channels.get(participant_id) {
-                    kiprintln!("Sending audio to non-speaker {} on channel {}", participant_id, channel_id);
+                    println!("Sending audio to non-speaker {} on channel {}", participant_id, channel_id);
                     let message = WsServerMessage::AudioData(WsAudioData {
                         participant_id: "server-mix".to_string(), // Special ID for server mix
                         data: bytes_to_base64(&audio_data),
@@ -1112,12 +1172,12 @@ fn broadcast_to_non_speakers(state: &VoiceState, call_id: &str, audio_data: Vec<
                     });
                     send_to_channel(channel_id, message);
                 } else {
-                    kiprintln!("No channel found for non-speaker {}", participant_id);
+                    println!("No channel found for non-speaker {}", participant_id);
                 }
             }
         }
-        kiprintln!("Found {} non-speakers in call", non_speaker_count);
+        println!("Found {} non-speakers in call", non_speaker_count);
     } else {
-        kiprintln!("Call {} not found in state", call_id);
+        println!("Call {} not found in state", call_id);
     }
 }
