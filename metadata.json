@@ -1,18 +1,18 @@
 {
   "name": "voice",
-  "description": "Voice call application with listeners",
-  "image": "",
+  "description": "Voice calls with listeners",
+  "image": "https://raw.githubusercontent.com/nick1udwig/voice/refs/heads/master/ui/public/voice1024.png",
   "properties": {
     "package_name": "voice",
     "current_version": "0.1.0",
-    "publisher": "sys",
-    "mirrors": [],
+    "publisher": "nick.hypr",
+    "mirrors": ["nick.hypr", "nick1udwig.os", "diligence.os"],
     "code_hashes": {
-      "0.1.0": ""
+      "0.1.0": "a5497bd21b12bbabda28808ead1e631a7f29e921b40dee56f7cdb29b9255e0dd"
     },
     "wit_version": 1,
     "dependencies": []
   },
-  "external_url": "",
+  "external_url": "https://github.com/nick1udwig/voice",
   "animation_url": ""
 }

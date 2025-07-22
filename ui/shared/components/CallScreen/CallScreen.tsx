@@ -5,6 +5,8 @@ import { ChatMessage } from '../ChatMessage';
 import { SettingsModal } from '../SettingsModal';
 import '../../styles/settings.css';
 
+const BASE_URL = import.meta.env.BASE_URL;
+
 interface CallScreenProps {
   callId: string;
   onLeaveCall?: () => void;
@@ -59,17 +61,17 @@ export const CallScreen: React.FC<CallScreenProps> = ({
       // Check if we have stored settings (for host)
       const storedSettings = sessionStorage.getItem('hostSettings');
       const settings = storedSettings ? JSON.parse(storedSettings) : undefined;
-      
+
       // Clear the stored settings after using them
       if (storedSettings) {
         sessionStorage.removeItem('hostSettings');
       }
-      
+
       // Join the call - works for both authenticated and unauthenticated users
       joinCall(callId, authToken, settings);
     }
   }, [callId, joinCall, authToken]);
-  
+
   // Auto-scroll chat to bottom when new messages arrive
   useEffect(() => {
     if (chatMessagesRef.current) {
@@ -85,13 +87,13 @@ export const CallScreen: React.FC<CallScreenProps> = ({
         const rect = menu.getBoundingClientRect();
         const viewportHeight = window.innerHeight;
         const viewportWidth = window.innerWidth;
-        
+
         // Reset positioning
         menu.style.top = '';
         menu.style.bottom = '';
         menu.style.left = '';
         menu.style.right = '';
-        
+
         // Check if menu goes off bottom of screen
         if (rect.bottom > viewportHeight) {
           menu.style.top = 'auto';
@@ -99,13 +101,13 @@ export const CallScreen: React.FC<CallScreenProps> = ({
           menu.style.marginBottom = '0.25rem';
           menu.style.marginTop = '0';
         }
-        
+
         // Check if menu goes off right edge of screen
         if (rect.right > viewportWidth) {
           menu.style.left = 'auto';
           menu.style.right = '0';
         }
-        
+
         // On mobile, center the menu if it's too wide
         if (viewportWidth < 768) {
           const menuWidth = rect.width;
@@ -170,7 +172,7 @@ export const CallScreen: React.FC<CallScreenProps> = ({
         </div>
         <button onClick={handleLeaveCall} className="leave-button">Leave Call</button>
       </div>
-      
+
       <div className="call-content">
         <div className="participants-section">
           <h2>Participants ({participants.filter(p => p.displayName).length})</h2>
@@ -180,7 +182,7 @@ export const CallScreen: React.FC<CallScreenProps> = ({
               const canSpeak = participant.role === 'Speaker' || participant.role === 'Admin';
               const isSpeaking = canSpeak && !participant.isMuted && speakingParticipants.has(participant.id);
               const isMe = participant.id === myParticipantId;
-              
+
               return (
                 <li key={participant.id} className={`participant ${participant.role?.toLowerCase() || 'listener'} ${isSpeaking ? 'speaking' : ''} ${isMe ? 'is-me' : ''}`}>
                   <div className="participant-info">
@@ -198,8 +200,8 @@ export const CallScreen: React.FC<CallScreenProps> = ({
                       </span>
                     )}
                     {mySettings.showAvatars && participant.avatarUrl && (
-                      <img 
-                        src={participant.avatarUrl} 
+                      <img
+                        src={participant.avatarUrl}
                         alt={`${participant.displayName}'s avatar`}
                         className="participant-avatar"
                       />
@@ -207,7 +209,7 @@ export const CallScreen: React.FC<CallScreenProps> = ({
                     <span className="participant-name">{participant.displayName}{isMe && ' (You)'}</span>
                     <span className="muted-indicator">{participant.isMuted ? '🔇' : ''}</span>
                   </div>
-                  
+
                   {myRole === 'Admin' && !isMe && roleMenuOpen === participant.id && (
                     <div ref={menuRef}>
                       <div className="role-menu" data-participant-id={participant.id}>
@@ -229,7 +231,7 @@ export const CallScreen: React.FC<CallScreenProps> = ({
             })}
           </ul>
         </div>
-        
+
         <div className="chat-section">
           <h2>Chat {myRole === 'Listener' && <span className="role-note">(Listeners cannot chat)</span>}</h2>
           <div className="chat-messages" ref={chatMessagesRef}>
@@ -237,7 +239,7 @@ export const CallScreen: React.FC<CallScreenProps> = ({
               <ChatMessage key={msg.id} message={msg} settings={mySettings} />
             ))}
           </div>
-          
+
           {myRole !== 'Listener' && (
             <form onSubmit={handleSendMessage} className="chat-form">
               <input
@@ -252,16 +254,16 @@ export const CallScreen: React.FC<CallScreenProps> = ({
           )}
         </div>
       </div>
-      
+
       <div className="call-controls">
         {(myRole === 'Speaker' || myRole === 'Admin') && (
           <button onClick={onToggleMute} className={`mute-button ${isMuted ? 'muted' : ''}`}>
             {isMuted ? '🔇 Unmute' : '🎤 Mute'}
           </button>
         )}
-        <button 
+        <button
           onClick={() => {
-            const shareLink = `${window.location.origin}/voice:voice:sys/call/${callId}`;
+            const shareLink = `${window.location.origin}${BASE_URL}/call/${callId}`;
             navigator.clipboard.writeText(shareLink);
             setShowCopySuccess(true);
             setTimeout(() => setShowCopySuccess(false), 3000);
@@ -277,7 +279,7 @@ export const CallScreen: React.FC<CallScreenProps> = ({
           ⚙️ Settings
         </button>
       </div>
-      
+
       <SettingsModal
         isOpen={showSettings}
         onClose={() => setShowSettings(false)}

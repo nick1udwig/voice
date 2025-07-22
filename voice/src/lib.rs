@@ -11,6 +11,8 @@ use base64::{Engine as _, engine::general_purpose};
 mod audio;
 use audio::AudioProcessor;
 
+const ICON: &str = include_str!("./icon");
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Role {
     Listener,
@@ -267,6 +269,13 @@ impl VoiceState {
             "yellow", "zebra", "acoustic", "bicycle", "chocolate", "diamond",
             "emerald", "fountain", "guitar", "helicopter", "illusion", "jasmine"
         ].into_iter().map(String::from).collect();
+
+        hyperware_process_lib::homepage::add_to_homepage(
+            "Voice",
+            Some(ICON),
+            Some(""),
+            None,
+        );
     }
 
     #[http(method = "POST")]
