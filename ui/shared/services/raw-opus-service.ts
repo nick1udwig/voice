@@ -40,12 +40,9 @@ export class RawOpusService {
       script.src = `${baseUrl}/libopus.wasm.js`;
       script.onload = () => {
         if (window.libopus && window.libopus.loaded) {
-          console.log('[RawOpusService] libopus already loaded');
           resolve();
         } else if (window.libopus) {
-          console.log('[RawOpusService] Waiting for libopus to load...');
           window.libopus.onload = () => {
-            console.log('[RawOpusService] libopus loaded via onload');
             resolve();
           };
         } else {
@@ -59,7 +56,6 @@ export class RawOpusService {
 
   async initialize(): Promise<void> {
     await this.libopusReady;
-    console.log('[RawOpusService] libopus loaded successfully');
   }
 
   setOnDataCallback(callback: (data: Uint8Array) => void): void {
@@ -70,14 +66,12 @@ export class RawOpusService {
     await this.libopusReady;
 
     if (this.isRecording) {
-      console.log('[RawOpusService] Already recording');
       return;
     }
 
     try {
       // Create encoder: 1 channel, 48kHz, 32kbps, 20ms frames, voice optimization
       this.encoder = new window.libopus.Encoder(1, 48000, 32000, 20, true);
-      console.log('[RawOpusService] Created Opus encoder');
 
       // Get microphone access
       this.mediaStream = await navigator.mediaDevices.getUserMedia({
@@ -135,12 +129,6 @@ export class RawOpusService {
               const first4 = Array.from(packet.slice(0, 4));
               const isOgg = first4[0] === 79 && first4[1] === 103 && first4[2] === 103 && first4[3] === 83; // "OggS"
               if (isOgg) {
-                console.error('[RawOpusService] ERROR: Encoding produced Ogg data, not raw Opus!');
-              }
-              // Log occasionally
-              if (Math.random() < 0.01) {
-                console.log('[RawOpusService] Encoded packet size:', packet.length,
-                           'first 4 bytes:', first4, 'isOgg:', isOgg);
               }
             }
             this.onDataCallback?.(packet);
@@ -154,7 +142,6 @@ export class RawOpusService {
       this.processor.connect(this.audioContext.destination);
 
       this.isRecording = true;
-      console.log('[RawOpusService] Recording started');
     } catch (error) {
       console.error('[RawOpusService] Failed to start recording:', error);
       throw error;
@@ -164,7 +151,6 @@ export class RawOpusService {
   async stopRecording(): Promise<void> {
     if (!this.isRecording) return;
 
-    console.log('[RawOpusService] Stopping recording...');
     this.isRecording = false;
 
     // Disconnect audio graph
@@ -195,11 +181,9 @@ export class RawOpusService {
       this.audioContext = null;
     }
 
-    console.log('[RawOpusService] Recording stopped');
   }
 
   setMuted(muted: boolean): void {
-    console.log('[RawOpusService] Setting muted:', muted);
     this.isMuted = muted;
   }
 
@@ -211,13 +195,8 @@ export class RawOpusService {
     if (!decoder) {
       decoder = new window.libopus.Decoder(1, 48000);
       this.decoders.set(streamId, decoder!);
-      console.log('[RawOpusService] Created decoder for stream:', streamId);
     }
 
-    // Log packet info occasionally for debugging
-    if (Math.random() < 0.01) {
-      console.log('[RawOpusService] Decoding packet - stream:', streamId, 'size:', opusData.length, 'decoders:', this.decoders.size);
-    }
 
     // Now decoder is guaranteed to be defined
     // Feed packet to decoder
@@ -227,7 +206,6 @@ export class RawOpusService {
     const samples = decoder!.output();
     if (!samples) {
       // No output yet (shouldn't happen with 20ms frames)
-      console.warn('[RawOpusService] No decoder output for stream:', streamId, 'packet size:', opusData.length);
       return new Float32Array(960);
     }
 
@@ -237,13 +215,6 @@ export class RawOpusService {
       float32Data[i] = samples[i] / 32768.0;
     }
 
-    // Check for silent output
-    if (Math.random() < 0.01) {
-      const maxAmplitude = Math.max(...samples.map(Math.abs));
-      const hasAudio = float32Data.some(sample => Math.abs(sample) > 0.001);
-      console.log('[RawOpusService] Decoded audio - stream:', streamId, 'samples:', samples.length, 
-                  'maxAmplitude:', maxAmplitude, 'hasAudio:', hasAudio);
-    }
 
     return float32Data;
   }
@@ -253,20 +224,17 @@ export class RawOpusService {
     if (decoder) {
       decoder.destroy();
       this.decoders.delete(streamId);
-      console.log('[RawOpusService] Cleared decoder for stream:', streamId);
     }
   }
 
   clearAllDecoders(): void {
     for (const [streamId, decoder] of this.decoders) {
       decoder.destroy();
-      console.log('[RawOpusService] Destroyed decoder for stream:', streamId);
     }
     this.decoders.clear();
   }
 
   async cleanup(): Promise<void> {
-    console.log('[RawOpusService] Cleaning up...');
     
     // Stop recording
     await this.stopRecording();

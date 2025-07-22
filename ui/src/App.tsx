@@ -33,13 +33,11 @@ function AppContent() {
         nodeId: window.our.node,
         processId: window.our.process,
         onOpen: (_event, _api) => {
-          console.log("Connected to Hyperware");
           setNodeConnected(true);
         },
         onMessage: (json, _api) => {
           try {
             const data = JSON.parse(json);
-            console.log("WebSocket received message", data);
           } catch (error) {
             console.error("Error parsing WebSocket message", error);
           }

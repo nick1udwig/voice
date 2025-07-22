@@ -92,17 +92,14 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
       // Connect to WebSocket first
       const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const wsUrl = `${wsProtocol}//${window.location.host}${BASE_URL}/ws`;
-      console.log('Attempting WebSocket connection to:', wsUrl);
 
       const ws = new WebSocket(wsUrl);
 
       ws.onopen = () => {
-        console.log('WebSocket connected, ws object:', ws);
         
         // Clear audio decoders on new connection to ensure fresh state
         const audioService = get().audioService;
         if (audioService) {
-          console.log('[VoiceStore] Clearing audio decoders on new WebSocket connection');
           audioService.clearDecoders();
         }
         
@@ -138,7 +135,6 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
         
         startHeartbeat();
 
-        console.log(`joining with auth token ${nodeAuthToken}`);
         // Get saved avatar URL from localStorage
         const savedAvatarUrl = localStorage.getItem('avatarUrl');
         
@@ -153,7 +149,6 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
           }
         };
 
-        console.log('Sending JoinCall message:', joinMessage);
         ws.send(JSON.stringify(joinMessage));
       };
 
@@ -162,16 +157,13 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
           const message = JSON.parse(event.data);
           get().handleWebSocketMessage(message);
         } catch (e) {
-          console.error('Failed to parse WebSocket message:', e);
         }
       };
 
       ws.onerror = (error) => {
-        console.error('WebSocket error:', error);
       };
 
       ws.onclose = () => {
-        console.log('WebSocket disconnected');
         
         // Clean up heartbeat
         const interval = get().heartbeatInterval;
@@ -188,7 +180,6 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
       set({ wsConnection: ws, connectionStatus: 'connecting' });
 
     } catch (error) {
-      console.error('Failed to join call:', error);
     }
   },
 
@@ -204,15 +195,12 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
   },
 
   toggleMute: () => {
-    console.log('[VoiceStore] Toggle mute called');
     const audioService = get().audioService;
     const isMuted = get().isMuted;
     const ws = get().wsConnection;
-    console.log('[VoiceStore] Current state - isMuted:', isMuted, 'audioService:', !!audioService, 'ws:', !!ws, 'ws.readyState:', ws?.readyState);
 
     if (audioService) {
       const newMutedState = !isMuted;
-      console.log('[VoiceStore] Changing mute state from', isMuted, 'to', newMutedState);
 
       // Update store state FIRST
       set({ isMuted: newMutedState });
@@ -220,27 +208,19 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
       // Then update audio service (now async)
       audioService.toggleMute(newMutedState)
         .then(() => {
-          console.log('[VoiceStore] Audio service mute toggle completed');
         })
         .catch((error: Error) => {
-          console.error('[VoiceStore] Failed to toggle mute in audio service:', error);
         });
       
-      // Verify the state was updated
-      const verifyMuted = get().isMuted;
-      console.log('[VoiceStore] Verified mute state after update:', verifyMuted);
 
       // Send mute state to server
       if (ws && ws.readyState === WebSocket.OPEN) {
-        console.log('[VoiceStore] Sending mute state to server:', newMutedState);
         ws.send(JSON.stringify({
           Mute: newMutedState
         }));
       } else {
-        console.warn('[VoiceStore] Cannot send mute state - WebSocket not ready. State:', ws?.readyState);
       }
     } else {
-      console.error('[VoiceStore] No audio service available for mute toggle');
     }
   },
 
@@ -256,7 +236,6 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
         }
       }));
     } else {
-      console.error('[VoiceStore] Cannot update role - not connected or not admin');
     }
   },
   
@@ -272,7 +251,6 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
         UpdateSettings: settings
       }));
     } else {
-      console.error('[VoiceStore] Cannot update settings - not connected');
     }
   },
   
@@ -285,23 +263,10 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
         UpdateAvatar: { avatarUrl: avatarUrl || null }
       }));
     } else {
-      console.error('[VoiceStore] Cannot update avatar - not connected');
     }
   },
 
   handleWebSocketMessage: (message: any) => {
-    // Log only important messages
-    if (message.JoinSuccess || message.Error || message.CallEnded) {
-      console.log('WebSocket message:', Object.keys(message)[0]);
-    }
-    
-    // Log specific important messages
-    if (message.CallEnded) {
-      console.log('[VoiceStore] Received CallEnded message');
-    }
-    if (message.CloseConnection) {
-      console.log('[VoiceStore] Received CloseConnection message');
-    }
 
     if (message.ParticipantJoined) {
       const participant = message.ParticipantJoined.participant;
@@ -364,12 +329,10 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
             const isNowNonSpeaker = ['Listener', 'Chatter'].includes(newRole);
             
             if (wasNonSpeaker && isNowSpeaker) {
-              console.log('[VoiceStore] Promoted from non-speaker to speaker, reinitializing audio');
               // Reinitialize audio with new role after state update
               // This will set up audio capture without destroying existing service
               setTimeout(() => get().initializeAudio(), 100);
             } else if (wasSpeaker && isNowNonSpeaker) {
-              console.log('[VoiceStore] Demoted from speaker to non-speaker, reinitializing audio');
               // Reinitialize audio with new role after state update
               // This will stop recording but keep playback
               setTimeout(() => get().initializeAudio(), 100);
@@ -389,7 +352,6 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
 
     // Special handling for ui-call JoinSuccess message
     if (message.JoinSuccess) {
-      console.log('[VoiceStore] Received JoinSuccess, marking as authenticated');
       const { participantId, role, participants, chatHistory, authToken, hostId } = message.JoinSuccess;
       const participantsMap = new Map();
       participants.forEach((p: ParticipantInfo) => {
@@ -481,21 +443,14 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
 
     // Handle error messages
     if (message.Error) {
-      console.error('[VoiceStore] Server error:', message.Error);
       // You might want to show this error to the user in a notification
       // For now, just log it
     }
 
     // Handle call ended
     if (message === 'CallEnded' || message.CallEnded) {
-      console.log('[VoiceStore] Call ended by host');
       // Set call ended state to show the screen
-      console.log('[VoiceStore] Setting callEnded to true in CallEnded handler');
       set({ callEnded: true });
-      
-      // Verify the state was actually set
-      const newState = get();
-      console.log('[VoiceStore] After set, callEnded is:', newState.callEnded);
       
       // Clean up audio first
       get().cleanupAudio();
@@ -505,18 +460,11 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
 
     // Handle close connection request from server
     if (message === 'CloseConnection' || message.CloseConnection) {
-      console.log('[VoiceStore] Server requested WebSocket close');
       // Set callEnded to true to show the Call Ended screen
-      console.log('[VoiceStore] Setting callEnded to true in CloseConnection handler');
       set({ callEnded: true });
-      
-      // Verify the state was actually set
-      const stateAfterSet = get();
-      console.log('[VoiceStore] After set, callEnded is:', stateAfterSet.callEnded);
       
       const ws = get().wsConnection;
       if (ws && ws.readyState === WebSocket.OPEN) {
-        console.log('[VoiceStore] Closing WebSocket connection as requested by server');
         ws.close();
       }
     }
@@ -547,7 +495,6 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
     const ws = new WebSocket(url);
 
     ws.onopen = () => {
-      console.log('WebSocket connected');
       
       // Clear audio decoders on new connection to ensure fresh state
       const audioService = get().audioService;
@@ -585,7 +532,6 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
   leaveCall: async () => {
     const state = get();
     if (!state.currentCall || !state.myParticipantId) {
-      console.error('[VoiceStore] Cannot leave call: no active call or participant ID');
       return;
     }
 
@@ -595,7 +541,6 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
     // FIRST: Close WebSocket connection immediately to prevent race conditions
     const ws = state.wsConnection;
     if (ws) {
-      console.log('[VoiceStore] Closing WebSocket connection before leave API call');
       ws.close();
       // Clear the connection state immediately
       set({ wsConnection: null, connectionStatus: 'disconnected', isAuthenticated: false });
@@ -614,9 +559,7 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
         participantId: state.myParticipantId
       });
       
-      console.log('[VoiceStore] Successfully called leave API');
     } catch (error) {
-      console.error('[VoiceStore] Failed to call leave API:', error);
     }
 
     // Clean up remaining state but keep callEnded: true
@@ -658,7 +601,6 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
   },
 
   initializeAudio: () => {
-    console.log('[VoiceStore] Initialize audio called');
     const store = get();
     
     // Create audio service if it doesn't exist
@@ -675,11 +617,9 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
 
     if (myRole && myParticipantId && audioService) {
       const isHost = store.hostId === myParticipantId;
-      console.log('[VoiceStore] Audio init params:', { myRole, myParticipantId, isHost, hostId: store.hostId });
 
       audioService.initializeAudio(myRole, myParticipantId, isHost)
         .then(() => {
-          console.log('[VoiceStore] Audio initialized successfully');
           // Update local stream in store
           const mediaStream = audioService.getMediaStream();
           if (mediaStream) {
@@ -687,7 +627,6 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
           }
         })
         .catch((error: Error) => {
-          console.error('[VoiceStore] Failed to initialize audio:', error);
           // Could show a notification to the user about mic permission failure
         });
     }
@@ -707,18 +646,14 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
   },
   
   handleUserInteraction: () => {
-    console.log('[VoiceStore] handleUserInteraction called');
     const audioService = get().audioService;
     if (audioService) {
       audioService.handleUserInteraction()
         .then(() => {
-          console.log('[VoiceStore] Audio context resumed via user interaction');
         })
         .catch((error: Error) => {
-          console.error('[VoiceStore] Failed to handle user interaction:', error);
         });
     } else {
-      console.log('[VoiceStore] No audio service available yet');
     }
   }
 });

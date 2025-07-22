@@ -152,7 +152,6 @@ export const CallScreen: React.FC<CallScreenProps> = ({
 
   const handleUserInteraction = () => {
     if (!audioResumed) {
-      console.log('[CallScreen] First user interaction - resuming audio contexts');
       // This will trigger audio context resume in the audio service
       setAudioResumed(true);
       // Call the audio service handler if provided

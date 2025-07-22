@@ -35,20 +35,15 @@ class JitterBuffer {
 
   constructor(audioContext?: AudioContext) {
     this.audioContext = audioContext || null;
-    console.log('[JitterBuffer] Constructor - audioContext:', audioContext, 
-      'state:', audioContext?.state);
     if (audioContext) {
       this.nextScheduledTime = audioContext.currentTime;
     }
   }
 
   setAudioContext(audioContext: AudioContext): void {
-    console.log('[JitterBuffer] setAudioContext called, context:', audioContext,
-      'state:', audioContext?.state);
     this.audioContext = audioContext;
     // Initialize next scheduled time to current audio context time
     this.nextScheduledTime = audioContext.currentTime;
-    console.log('[JitterBuffer] Set nextScheduledTime to:', this.nextScheduledTime);
   }
 
   getBufferSize(): number {
@@ -57,32 +52,22 @@ class JitterBuffer {
   
   // Method to trigger scheduling after context resume
   triggerScheduling(): void {
-    console.log('[JitterBuffer] triggerScheduling called, hasPendingSchedule:', this.hasPendingSchedule,
-      'buffer size:', this.buffer.size, 'isScheduling:', this.isScheduling);
     if (this.hasPendingSchedule && this.buffer.size > 0 && !this.isScheduling) {
       this.hasPendingSchedule = false;
-      console.log('[JitterBuffer] Triggering deferred scheduling after context resume');
       this.schedulePlayback();
     }
   }
   
   private startHeartbeat(): void {
-    console.log('[JitterBuffer] Starting heartbeat timer');
     // Check every 100ms to ensure continuous playback
     this.heartbeatInterval = setInterval(() => {
       const now = Date.now();
       const timeSinceLastPlayback = now - this.lastSuccessfulPlayback;
       
       if (this.buffer.size > 0 && timeSinceLastPlayback > 200 && !this.isScheduling) {
-        console.log('[JitterBuffer] Heartbeat detected stalled playback, forcing schedule');
-        console.log('[JitterBuffer] Heartbeat - buffer size:', this.buffer.size, 
-          'timeSinceLastPlayback:', timeSinceLastPlayback,
-          'isScheduling:', this.isScheduling,
-          'audioContext state:', this.audioContext?.state);
         this.stalledPacketCount++;
         
         if (this.stalledPacketCount > 10) {
-          console.warn('[JitterBuffer] Too many stalls, resetting buffer state');
           this.resetBufferState();
         } else {
           this.schedulePlayback();
@@ -92,7 +77,6 @@ class JitterBuffer {
   }
   
   private resetBufferState(): void {
-    console.log('[JitterBuffer] Resetting buffer state');
     this.stalledPacketCount = 0;
     this.isScheduling = false;
     
@@ -118,7 +102,6 @@ class JitterBuffer {
     
     // Force a scheduling attempt after reset
     if (this.buffer.size > 0) {
-      console.log('[JitterBuffer] Have packets after reset, forcing schedule');
       setTimeout(() => this.schedulePlayback(), 10);
     }
   }
@@ -128,7 +111,6 @@ class JitterBuffer {
     if (this.firstSeenSequence === null) {
       this.firstSeenSequence = packet.sequenceNumber;
       this.lastPlayedSequence = packet.sequenceNumber - 1; // Set up for first packet
-      console.log('[JitterBuffer] First packet received, sequence:', packet.sequenceNumber);
     }
     
     this.buffer.set(packet.sequenceNumber, packet);
@@ -136,18 +118,7 @@ class JitterBuffer {
     // Update last successful playback time to prevent false stalls
     this.lastSuccessfulPlayback = Date.now();
     
-    // Enhanced debugging
-    console.log('[JitterBuffer] push - audioContext:', this.audioContext, 
-      'state:', this.audioContext?.state, 
-      'buffer size:', this.buffer.size,
-      'isScheduling:', this.isScheduling,
-      'nextScheduledTime:', this.nextScheduledTime,
-      'currentTime:', this.audioContext?.currentTime);
 
-    // Debug: Log buffer state for first few packets
-    if (packet.sequenceNumber < 5 || this.buffer.size % 50 === 0) {
-      console.log('[JitterBuffer] Buffer size after push:', this.buffer.size, 'latest seq:', packet.sequenceNumber);
-    }
 
     // Clean up old packets (older than 1 second)
     const now = Date.now();
@@ -159,7 +130,6 @@ class JitterBuffer {
     }
     
     if (packetsToDelete.length > 0) {
-      console.log('[JitterBuffer] Cleaning up old packets:', packetsToDelete);
       for (const seq of packetsToDelete) {
         this.buffer.delete(seq);
       }
@@ -172,60 +142,45 @@ class JitterBuffer {
       const toRemove = sortedSeqs.slice(0, this.buffer.size - maxBufferSize);
       for (const seq of toRemove) {
         this.buffer.delete(seq);
-        console.log('[JitterBuffer] FIFO eviction: removed old packet seq:', seq);
       }
     }
 
     // Log actual buffer size after cleanup
     const actualBufferSize = this.buffer.size;
-    console.log('[JitterBuffer] After cleanup - buffer size:', actualBufferSize, 'seq:', packet.sequenceNumber);
     
     // Ensure scheduling is running if we have packets
     if (this.audioContext && actualBufferSize >= 2) { // Wait for at least 2 packets
-      console.log('[JitterBuffer] Have enough packets, checking scheduling...');
       
       // Try to schedule even if suspended - the audio will queue up
       if (this.audioContext.state === 'suspended') {
-        console.log('[JitterBuffer] Audio context is suspended, marking pending schedule');
         this.hasPendingSchedule = true;
       }
       
-      console.log('[JitterBuffer] Audio context state:', this.audioContext.state);
       // Ensure scheduling is active
       if (!this.isScheduling) {
-        console.log('[JitterBuffer] Starting playback scheduling (not currently scheduling)');
         this.schedulePlayback();
       } else {
-        console.log('[JitterBuffer] Already scheduling, skipping');
       }
       // Ensure heartbeat is running
       if (!this.heartbeatInterval) {
-        console.log('[JitterBuffer] Starting heartbeat');
         this.startHeartbeat();
       }
     } else {
-      console.log('[JitterBuffer] Not ready to schedule - audioContext:', !!this.audioContext, 
-        'buffer size:', actualBufferSize);
     }
   }
 
   private schedulePlayback(): void {
-    console.log('[JitterBuffer] schedulePlayback - entering');
     
     if (!this.audioContext) {
-      console.error('[JitterBuffer] No audio context available!');
       return;
     }
     
-    console.log('[JitterBuffer] schedulePlayback - audioContext state:', this.audioContext.state);
     
     // Prevent concurrent scheduling
     if (this.isScheduling) {
-      console.log('[JitterBuffer] Already scheduling, skipping concurrent call');
       return;
     }
     
-    console.log('[JitterBuffer] Setting isScheduling = true');
     this.isScheduling = true;
 
     try {
@@ -235,58 +190,46 @@ class JitterBuffer {
       // For suspended context, currentTime is 0, so add a small delay
       if (this.nextScheduledTime < currentTime || (currentTime === 0 && this.nextScheduledTime === 0)) {
         this.nextScheduledTime = currentTime + (this.targetDelay / 1000);
-        console.log('[JitterBuffer] Adjusted nextScheduledTime to:', this.nextScheduledTime);
       }
 
       // Schedule packets while we have them and haven't scheduled too far ahead
       let packetsScheduled = 0;
-      console.log('[JitterBuffer] Starting packet scheduling loop, buffer size:', this.buffer.size);
       
       while (this.buffer.size > 0 && this.nextScheduledTime < currentTime + 0.5) { // Don't schedule more than 500ms ahead
         const packet = this.popNext();
         if (!packet) {
-          console.log('[JitterBuffer] popNext returned null, breaking loop');
           break;
         }
 
-        console.log('[JitterBuffer] Scheduling packet seq:', packet.sequenceNumber);
         this.schedulePacket(packet);
         packetsScheduled++;
       }
 
-      console.log('[JitterBuffer] Scheduled', packetsScheduled, 'packets, buffer remaining:', this.buffer.size);
 
       // Always schedule next check if we have packets or are expecting more
       if (this.buffer.size > 0 || packetsScheduled > 0) {
         // Schedule next check when our scheduled audio will be close to running out
         const timeUntilNextCheck = Math.max(10, (this.nextScheduledTime - currentTime - 0.1) * 1000);
-        console.log('[JitterBuffer] Scheduling next check in', timeUntilNextCheck, 'ms');
         setTimeout(() => {
-          console.log('[JitterBuffer] Next check timer fired, setting isScheduling = false');
           this.isScheduling = false;
           this.schedulePlayback();
         }, timeUntilNextCheck);
       } else {
-        console.log('[JitterBuffer] No packets to schedule, setting isScheduling = false');
         this.isScheduling = false;
       }
     } catch (error) {
-      console.error('[JitterBuffer] Error in schedulePlayback:', error);
       this.isScheduling = false;
       
       // Retry scheduling after error
       if (this.buffer.size > 0) {
-        console.log('[JitterBuffer] Retrying after scheduling error');
         setTimeout(() => this.schedulePlayback(), 50);
       }
     }
   }
 
   private schedulePacket(packet: AudioPacket): void {
-    console.log('[JitterBuffer] schedulePacket - seq:', packet.sequenceNumber);
     
     if (!this.audioContext) {
-      console.error('[JitterBuffer] No audio context in schedulePacket!');
       return;
     }
 
@@ -298,17 +241,13 @@ class JitterBuffer {
         this.audioContext.sampleRate
       );
       audioBuffer.copyToChannel(packet.data, 0);
-      console.log('[JitterBuffer] Created audio buffer, duration:', audioBuffer.duration);
 
       // Create and schedule source node
       const source = this.audioContext.createBufferSource();
       source.buffer = audioBuffer;
       source.connect(this.audioContext.destination);
-      console.log('[JitterBuffer] Created and connected AudioBufferSourceNode');
       
       // Schedule to play at the next time slot
-      console.log('[JitterBuffer] Scheduling to start at:', this.nextScheduledTime, 
-        'current time:', this.audioContext.currentTime);
       source.start(this.nextScheduledTime);
       
       // Calculate when this source will end
@@ -332,11 +271,6 @@ class JitterBuffer {
         }
       };
 
-      // Log scheduling for first few packets
-      if (packet.sequenceNumber < 5 || packet.sequenceNumber % 100 === 0) {
-        console.log('[JitterBuffer] Successfully scheduled packet seq:', packet.sequenceNumber, 
-          'at time:', this.nextScheduledTime, 'duration:', audioBuffer.duration);
-      }
       
       // Update successful playback time and reset stall counter
       this.lastSuccessfulPlayback = Date.now();
@@ -351,7 +285,6 @@ class JitterBuffer {
       }
 
     } catch (error) {
-      console.error('[JitterBuffer] Error scheduling packet:', error);
     }
   }
 
@@ -382,7 +315,6 @@ class JitterBuffer {
     }
     
     if (sourcesToClean.length > 0) {
-      console.log('[JitterBuffer] Cleaned up', sourcesToClean.length, 'old audio sources');
     }
   }
 
@@ -393,7 +325,6 @@ class JitterBuffer {
     if (packet) {
       this.buffer.delete(nextSequence);
       this.lastPlayedSequence = nextSequence;
-      console.log('[JitterBuffer] popNext - found packet seq:', nextSequence);
       return packet;
     }
 
@@ -406,12 +337,10 @@ class JitterBuffer {
         
         // If gap is large, assume it's an intentional sequence reset/jump
         if (gap > this.maxSequenceGap) {
-          console.log(`[JitterBuffer] Large sequence gap detected (${gap}), resetting to sequence ${nextAvailable}`);
           this.lastPlayedSequence = nextAvailable - 1;
           return this.popNext();
         } else if (gap > 0) {
           // Small gap - likely packet loss
-          console.warn(`[JitterBuffer] Lost ${gap} audio packets, jumping from ${nextSequence} to ${nextAvailable}`);
           this.lastPlayedSequence = nextAvailable - 1;
           return this.popNext();
         }
@@ -422,7 +351,6 @@ class JitterBuffer {
         
         if (wrapGap <= this.maxSequenceGap) {
           // Normal wraparound
-          console.log(`[JitterBuffer] Sequence wraparound detected, jumping from ${nextSequence} to ${nextAvailable}`);
           this.lastPlayedSequence = nextAvailable - 1;
           return this.popNext();
         }
@@ -485,7 +413,6 @@ export class AudioServiceV3 {
 
   constructor(getStore: () => BaseVoiceStore) {
     this.getStore = getStore;
-    console.log('[AudioService] Constructor called');
     this.config = {
       sampleRate: 48000,
       channels: 1,
@@ -504,7 +431,6 @@ export class AudioServiceV3 {
   
   // Public method to handle any user interaction
   async handleUserInteraction(): Promise<void> {
-    console.log('[AudioService] handleUserInteraction called');
     if (!this.hasResumedOnUserGesture) {
       this.hasResumedOnUserGesture = true;
       await this.resumeAudioContexts();
@@ -520,14 +446,12 @@ export class AudioServiceV3 {
     this.cleanupInterval = window.setInterval(() => {
       // Clean up any orphaned jitter buffers
       if (this.jitterBuffers.size > 2) {
-        console.log('[AudioService] Running periodic cleanup, buffer count:', this.jitterBuffers.size);
         // Keep only the most recently used buffer
         const bufferKey = 'unified-mix';
         const keepBuffer = this.jitterBuffers.get(bufferKey);
         
         for (const [key, buffer] of this.jitterBuffers) {
           if (key !== bufferKey) {
-            console.log('[AudioService] Cleaning up old jitter buffer:', key);
             buffer.cleanup();
             this.jitterBuffers.delete(key);
           }
@@ -547,13 +471,10 @@ export class AudioServiceV3 {
     if (document.hidden) {
       // Going to background
       this.wasPlayingBeforeHidden = this.playbackContext.state === 'running';
-      console.log('[AudioService] Tab hidden, audio context state:', this.playbackContext.state);
     } else {
       // Coming to foreground
       if (this.wasPlayingBeforeHidden && this.playbackContext.state === 'suspended') {
-        console.log('[AudioService] Tab visible again, resuming audio context');
         this.playbackContext.resume().catch(error => {
-          console.error('[AudioService] Failed to resume audio context on visibility change:', error);
         });
       }
     }
@@ -561,28 +482,22 @@ export class AudioServiceV3 {
 
 
   async initializeAudio(role: string, participantId: string, isHost: boolean): Promise<void> {
-    console.log('[AudioService] Initializing audio:', { role, participantId, hasOpusService: !!this.opusService });
     
     // Initialize opus service only if it doesn't exist (needed for decoding)
     if (!this.opusService) {
-      console.log('[AudioService] Creating new opus service');
       this.opusService = new RawOpusService();
       await this.opusService.initialize();
-      console.log('[AudioService] Using service:', this.opusService?.constructor.name);
     } else {
-      console.log('[AudioService] Opus service already exists, type:', this.opusService?.constructor.name);
     }
     
     // Always set up playback context early for all participants
     if (!this.playbackContext) {
-      console.log('[AudioService] Setting up audio playback early');
       await this.setupAudioPlayback();
     }
     
     const canSpeak = ['Speaker', 'Admin'].includes(role);
     
     if (canSpeak) {
-      console.log('[AudioService] User can speak, setting up audio capture');
       // Reset recording flag when reinitializing for speakers
       this.hasStartedRecording = false;
       // Ensure any existing recorder is stopped first (important for role changes)
@@ -592,7 +507,6 @@ export class AudioServiceV3 {
       
       // Initialize VAD for speakers
       if (!this.vadService) {
-        console.log('[AudioService] Creating VAD service');
         this.vadService = new VadService({
           onSpeechStart: () => this.handleSpeechStart(),
           onSpeechEnd: () => this.handleSpeechEnd(),
@@ -605,10 +519,8 @@ export class AudioServiceV3 {
       
       await this.setupAudioCapture();
     } else {
-      console.log('[AudioService] User cannot speak (role:', role, ')');
       // Always stop recording for non-speakers to clean up any recorder state
       if (this.opusService) {
-        console.log('[AudioService] Ensuring recording is stopped for non-speaker');
         await this.opusService.stopRecording();
       }
       // Reset recording flag for non-speakers
@@ -616,7 +528,6 @@ export class AudioServiceV3 {
       
       // Clean up VAD for non-speakers
       if (this.vadService) {
-        console.log('[AudioService] Cleaning up VAD for non-speaker');
         await this.vadService.cleanup();
         this.vadService = null;
       }
@@ -624,27 +535,20 @@ export class AudioServiceV3 {
     
     // Verify playback is set up
     if (!this.playbackContext) {
-      console.error('[AudioService] Playback context still not initialized after setup!');
     } else {
-      console.log('[AudioService] Playback context ready, state:', this.playbackContext.state);
       
       // Try to resume if suspended (this might fail without user gesture)
       if (this.playbackContext.state === 'suspended') {
-        console.log('[AudioService] Attempting early resume of suspended context');
         this.playbackContext.resume().then(() => {
-          console.log('[AudioService] Early resume successful');
         }).catch(error => {
-          console.log('[AudioService] Early resume failed (expected without user gesture):', error.message);
         });
       }
     }
     
-    console.log('[AudioService] Audio initialization complete');
   }
 
   private async setupAudioCapture(): Promise<void> {
     try {
-      console.log('[AudioService] Setting up audio capture');
 
       if (!this.opusService) {
         throw new Error('Opus service not initialized');
@@ -657,7 +561,6 @@ export class AudioServiceV3 {
           const first4 = Array.from(data.slice(0, 4));
           const isOgg = first4[0] === 79 && first4[1] === 103 && first4[2] === 103 && first4[3] === 83;
           if (isOgg) {
-            console.error('[AudioService] ERROR: Sending Ogg data to backend!');
           }
         }
         
@@ -666,8 +569,6 @@ export class AudioServiceV3 {
         
         // Debug log rarely
         if (this.sequenceNumber % 100 === 0) {
-          console.log('[AudioService] Data callback - ws:', !!currentWs, 'wsState:', currentWs?.readyState, 
-            'muted:', this.getStore().isMuted, 'auth:', this.getStore().isAuthenticated);
         }
         
         // Send encoded opus data to server only if VAD is active (speaking) or VAD is not enabled
@@ -689,22 +590,15 @@ export class AudioServiceV3 {
           currentWs.send(JSON.stringify(message));
           
           if (this.sequenceNumber % 100 === 0) {
-            console.log('[AudioService] Sent opus data, size:', data.length, 'seq:', this.sequenceNumber, 'VAD active:', this.isVadActive);
           }
         } else {
           // Log why we're not sending audio (rarely)
           if (this.sequenceNumber % 100 === 0) {
-            console.log('[AudioService] Not sending audio - ws:', !!currentWs, 
-              'wsState:', currentWs?.readyState, 
-              'muted:', this.getStore().isMuted, 
-              'authenticated:', this.getStore().isAuthenticated);
           }
           
           if (!this.getStore().isAuthenticated && !this.hasLoggedAuthWait) {
-            console.log('[AudioService] Waiting for authentication before sending audio...');
             this.hasLoggedAuthWait = true;
           } else if (this.getStore().isAuthenticated && this.hasLoggedAuthWait) {
-            console.log('[AudioService] Authentication complete, ready to send audio when unmuted');
             this.hasLoggedAuthWait = false;
           }
         }
@@ -714,41 +608,31 @@ export class AudioServiceV3 {
 
       // Don't start recording yet - wait for user gesture (unmute)
       // This avoids AudioContext autoplay policy issues
-      console.log('[AudioService] Audio capture setup complete, waiting for user gesture to start recording');
       
       // Apply initial mute state (we start muted)
       this.opusService.setMuted(this.getStore().isMuted);
       
-      console.log('[AudioService] Audio capture setup complete, initial mute state:', this.getStore().isMuted);
 
     } catch (error) {
-      console.error('[AudioService] Failed to setup audio capture:', error);
       throw error;
     }
   }
 
 
   private async setupAudioPlayback(): Promise<void> {
-    console.log('[AudioService] Setting up audio playback context');
     try {
       this.playbackContext = new AudioContext({
         sampleRate: this.config.sampleRate,
         latencyHint: 'interactive'
       });
-      console.log('[AudioService] Created AudioContext successfully');
     } catch (error) {
-      console.error('[AudioService] Failed to create AudioContext:', error);
       throw error;
     }
 
     // Audio contexts often start suspended, try to resume
     if (this.playbackContext.state === 'suspended') {
-      console.log('[AudioService] Audio context is suspended, will resume on user interaction');
     }
 
-    console.log('[AudioService] Playback context state:', this.playbackContext.state,
-      'sampleRate:', this.playbackContext.sampleRate,
-      'currentTime:', this.playbackContext.currentTime);
   }
 
   private checkAudioLevels(samples: Float32Array): boolean {
@@ -756,7 +640,6 @@ export class AudioServiceV3 {
     const maxLevel = Math.max(...samples.map(Math.abs));
     
     if (this.sequenceNumber % 10 === 0) {
-      console.log('[AudioService] Audio level check - hasAudio:', hasAudio, 'maxLevel:', maxLevel, 'samples:', samples.length);
     }
     
     return hasAudio;
@@ -765,9 +648,6 @@ export class AudioServiceV3 {
   async handleIncomingAudio(participantId: string, audioData: any): Promise<void> {
     // Log sequence numbers more frequently for debugging
     if (audioData.sequence !== undefined && (audioData.sequence % 10 === 0 || audioData.sequence < 5)) {
-      console.log('[AudioService] Received audio seq:', audioData.sequence,
-                  'from:', participantId, 'timestamp:', audioData.timestamp,
-                  'playbackContext state:', this.playbackContext?.state);
     }
     
     // Server now sends personalized mix-minus audio, so just play it
@@ -778,7 +658,6 @@ export class AudioServiceV3 {
     let float32Data: Float32Array;
     
     if (!this.opusService) {
-      console.error('[AudioService] Opus service not available');
       return;
     }
     
@@ -793,11 +672,9 @@ export class AudioServiceV3 {
       if (!hasAudio) {
         // Only warn occasionally about silent audio
         if (Math.random() < 0.01) {
-          console.warn('[AudioService] Decoded audio appears to be silent from', participantId, 'using decoder:', decoderKey);
         }
       }
     } catch (error) {
-      console.error('[AudioService] Failed to decode audio from', participantId, ':', error);
       return;
     }
 
@@ -808,12 +685,10 @@ export class AudioServiceV3 {
     };
     
     if (!this.playbackContext) {
-      console.error('[AudioService] Playback context not initialized! Creating now...');
       // Try to create it now as a fallback
       try {
         await this.setupAudioPlayback();
       } catch (error) {
-        console.error('[AudioService] Failed to create playback context:', error);
         return;
       }
     }
@@ -823,9 +698,6 @@ export class AudioServiceV3 {
     const bufferKey = 'unified-mix';
     let jitterBuffer = this.jitterBuffers.get(bufferKey);
     if (!jitterBuffer) {
-      console.log('[AudioService] Creating unified jitter buffer for all incoming audio');
-      console.log('[AudioService] Passing AudioContext to JitterBuffer:', this.playbackContext,
-        'state:', this.playbackContext?.state);
       jitterBuffer = new JitterBuffer(this.playbackContext || undefined);
       this.jitterBuffers.set(bufferKey, jitterBuffer);
       // Set audio context in case it wasn't available during construction
@@ -834,7 +706,6 @@ export class AudioServiceV3 {
       }
     }
 
-    console.log('[AudioService] Pushing packet to jitter buffer, seq:', packet.sequenceNumber);
     jitterBuffer.push(packet);
   }
 
@@ -849,11 +720,9 @@ export class AudioServiceV3 {
 
 
   async toggleMute(muted: boolean): Promise<void> {
-    console.log('[AudioService] Toggling mute to:', muted, 'store.isMuted:', this.getStore().isMuted, 'store.isAuthenticated:', this.getStore().isAuthenticated);
     
     // ALWAYS resume audio contexts on ANY user interaction (mute/unmute)
     // This is critical for Chrome autoplay policy
-    console.log('[AudioService] User interaction detected (mute toggle), resuming audio contexts');
     await this.resumeAudioContexts();
     
     // Check if this is the first unmute for a speaker (user gesture)
@@ -861,19 +730,15 @@ export class AudioServiceV3 {
     
     if (!muted && canSpeak && this.opusService && !this.hasStartedRecording) {
       // Start recording on first unmute (user gesture required for AudioContext)
-      console.log('[AudioService] First unmute detected, starting recording with user gesture');
       try {
         await this.opusService.startRecording();
         this.hasStartedRecording = true;
-        console.log('[AudioService] Recording started successfully');
         
         // Start VAD after recording starts
         if (this.vadService) {
           await this.vadService.start();
-          console.log('[AudioService] VAD started');
         }
       } catch (error) {
-        console.error('[AudioService] Failed to start recording:', error);
       }
     }
     
@@ -896,29 +761,22 @@ export class AudioServiceV3 {
   }
 
   private async resumeAudioContexts(): Promise<void> {
-    console.log('[AudioService] Resuming audio contexts on user interaction');
 
     if (this.playbackContext) {
-      console.log('[AudioService] Playback context state before resume:', this.playbackContext.state);
       if (this.playbackContext.state === 'suspended') {
         try {
           await this.playbackContext.resume();
-          console.log('[AudioService] Resumed playback context, state:', this.playbackContext.state);
           
           // Force scheduling check after resume
           for (const [key, jitterBuffer] of this.jitterBuffers) {
-            console.log('[AudioService] Triggering scheduling for buffer:', key, 'after context resume');
             // This will trigger scheduling now that context is running
             jitterBuffer.triggerScheduling();
           }
         } catch (error) {
-          console.error('[AudioService] Failed to resume playback context:', error);
         }
       } else {
-        console.log('[AudioService] Playback context already running');
       }
     } else {
-      console.error('[AudioService] No playback context to resume!');
     }
   }
 
@@ -933,13 +791,11 @@ export class AudioServiceV3 {
   }
 
   private handleSpeechStart(): void {
-    console.log('[AudioService] Speech started (VAD)');
     this.isVadActive = true;
     this.updateSpeakingState(true);
   }
 
   private handleSpeechEnd(): void {
-    console.log('[AudioService] Speech ended (VAD)');
     this.isVadActive = false;
     this.updateSpeakingState(false);
   }
@@ -958,20 +814,17 @@ export class AudioServiceV3 {
         };
         
         ws.send(JSON.stringify(message));
-        console.log('[AudioService] Sent speaking state update:', isSpeaking);
       }
     }
   }
 
   clearDecoders(): void {
     if (this.opusService) {
-      console.log('[AudioService] Clearing all decoders');
       this.opusService.clearAllDecoders();
     }
   }
 
   async cleanup(): Promise<void> {
-    console.log('[AudioService] Cleaning up');
     
     // Remove visibility handler
     document.removeEventListener('visibilitychange', this.handleVisibilityChange);
