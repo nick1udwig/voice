@@ -130,6 +130,19 @@ export class RawOpusService {
           // Get encoded packets
           let packet = this.encoder.output();
           while (packet) {
+            // Debug: Check if this is raw Opus or Ogg-wrapped
+            if (packet.length >= 4) {
+              const first4 = Array.from(packet.slice(0, 4));
+              const isOgg = first4[0] === 79 && first4[1] === 103 && first4[2] === 103 && first4[3] === 83; // "OggS"
+              if (isOgg) {
+                console.error('[RawOpusService] ERROR: Encoding produced Ogg data, not raw Opus!');
+              }
+              // Log occasionally
+              if (Math.random() < 0.01) {
+                console.log('[RawOpusService] Encoded packet size:', packet.length,
+                           'first 4 bytes:', first4, 'isOgg:', isOgg);
+              }
+            }
             this.onDataCallback?.(packet);
             packet = this.encoder.output();
           }
@@ -201,6 +214,11 @@ export class RawOpusService {
       console.log('[RawOpusService] Created decoder for stream:', streamId);
     }
 
+    // Log packet info occasionally for debugging
+    if (Math.random() < 0.01) {
+      console.log('[RawOpusService] Decoding packet - stream:', streamId, 'size:', opusData.length, 'decoders:', this.decoders.size);
+    }
+
     // Now decoder is guaranteed to be defined
     // Feed packet to decoder
     decoder!.input(opusData);
@@ -209,7 +227,7 @@ export class RawOpusService {
     const samples = decoder!.output();
     if (!samples) {
       // No output yet (shouldn't happen with 20ms frames)
-      console.warn('[RawOpusService] No decoder output for stream:', streamId);
+      console.warn('[RawOpusService] No decoder output for stream:', streamId, 'packet size:', opusData.length);
       return new Float32Array(960);
     }
 
@@ -219,7 +237,32 @@ export class RawOpusService {
       float32Data[i] = samples[i] / 32768.0;
     }
 
+    // Check for silent output
+    if (Math.random() < 0.01) {
+      const maxAmplitude = Math.max(...samples.map(Math.abs));
+      const hasAudio = float32Data.some(sample => Math.abs(sample) > 0.001);
+      console.log('[RawOpusService] Decoded audio - stream:', streamId, 'samples:', samples.length, 
+                  'maxAmplitude:', maxAmplitude, 'hasAudio:', hasAudio);
+    }
+
     return float32Data;
+  }
+
+  clearDecoder(streamId: string): void {
+    const decoder = this.decoders.get(streamId);
+    if (decoder) {
+      decoder.destroy();
+      this.decoders.delete(streamId);
+      console.log('[RawOpusService] Cleared decoder for stream:', streamId);
+    }
+  }
+
+  clearAllDecoders(): void {
+    for (const [streamId, decoder] of this.decoders) {
+      decoder.destroy();
+      console.log('[RawOpusService] Destroyed decoder for stream:', streamId);
+    }
+    this.decoders.clear();
   }
 
   async cleanup(): Promise<void> {
@@ -229,10 +272,6 @@ export class RawOpusService {
     await this.stopRecording();
 
     // Destroy all decoders
-    for (const [streamId, decoder] of this.decoders) {
-      decoder.destroy();
-      console.log('[RawOpusService] Destroyed decoder for stream:', streamId);
-    }
-    this.decoders.clear();
+    this.clearAllDecoders();
   }
 }

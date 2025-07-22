@@ -21,7 +21,8 @@ export const CallScreenWrapper: React.FC = () => {
     nodeConnected,
     speakingStates,
     mySettings,
-    updateSettings
+    updateSettings,
+    handleUserInteraction
   } = useVoiceStore();
 
   const handleLeaveCall = async () => {
@@ -55,6 +56,7 @@ export const CallScreenWrapper: React.FC = () => {
       speakingParticipants={new Set(Array.from(speakingStates.entries()).filter(([_, isSpeaking]) => isSpeaking).map(([id]) => id))}
       mySettings={mySettings}
       onUpdateSettings={updateSettings}
+      onUserInteraction={handleUserInteraction}
     />
   );
 };

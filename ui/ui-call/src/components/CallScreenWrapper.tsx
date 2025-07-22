@@ -36,7 +36,8 @@ export const CallScreenWrapper: React.FC = () => {
     callEnded,
     leaveCall,
     mySettings,
-    updateSettings
+    updateSettings,
+    handleUserInteraction
   } = useVoiceStore();
 
   // Debug callEnded state
@@ -79,6 +80,7 @@ export const CallScreenWrapper: React.FC = () => {
         speakingParticipants={new Set(Array.from(speakingStates.entries()).filter(([_, isSpeaking]) => isSpeaking).map(([id]) => id))}
         mySettings={mySettings}
         onUpdateSettings={updateSettings}
+        onUserInteraction={handleUserInteraction}
       />
     </>
   );

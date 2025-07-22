@@ -50,6 +50,7 @@ export interface BaseVoiceActions {
   // Audio actions
   initializeAudio: () => void;
   cleanupAudio: () => void;
+  handleUserInteraction: () => void;
 }
 
 export type BaseVoiceStore = BaseVoiceState & BaseVoiceActions;
@@ -96,6 +97,14 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
 
       ws.onopen = () => {
         console.log('WebSocket connected, ws object:', ws);
+        
+        // Clear audio decoders on new connection to ensure fresh state
+        const audioService = get().audioService;
+        if (audioService) {
+          console.log('[VoiceStore] Clearing audio decoders on new WebSocket connection');
+          audioService.clearDecoders();
+        }
+        
         set({
           wsConnection: ws,
           connectionStatus: 'connected',
@@ -506,6 +515,14 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
 
     ws.onopen = () => {
       console.log('WebSocket connected');
+      
+      // Clear audio decoders on new connection to ensure fresh state
+      const audioService = get().audioService;
+      if (audioService) {
+        console.log('[VoiceStore] Clearing audio decoders on new WebSocket connection');
+        audioService.clearDecoders();
+      }
+      
       set({ wsConnection: ws, connectionStatus: 'connected' });
     };
 
@@ -653,6 +670,22 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
         audioLevels: new Map(),
         speakingStates: new Map()
       });
+    }
+  },
+  
+  handleUserInteraction: () => {
+    console.log('[VoiceStore] handleUserInteraction called');
+    const audioService = get().audioService;
+    if (audioService) {
+      audioService.handleUserInteraction()
+        .then(() => {
+          console.log('[VoiceStore] Audio context resumed via user interaction');
+        })
+        .catch((error: Error) => {
+          console.error('[VoiceStore] Failed to handle user interaction:', error);
+        });
+    } else {
+      console.log('[VoiceStore] No audio service available yet');
     }
   }
 });
