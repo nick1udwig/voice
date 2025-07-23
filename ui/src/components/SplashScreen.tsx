@@ -1,15 +1,18 @@
 import React, { useState, useEffect } from 'react';
 import { useVoiceStore } from '../store/voice';
-import { startNodeHandshake, Role, UserSettings, getHostSettings, updateHostSettings } from '../../../target/ui/caller-utils';
+import { startNodeHandshake, Role, UserSettings } from '../../../target/ui/caller-utils';
+import { getHostSettings, updateHostSettings } from '../../shared/api/settings-api';
 import { getRoleEmoji } from '../../shared/utils/roleUtils';
 import { SettingsModal } from '../../shared/components/SettingsModal';
-import { DEFAULT_SETTINGS } from '../../shared/types/settings';
+import { DEFAULT_SETTINGS, settingsFromWire } from '../../shared/types/settings';
 import '../../shared/styles/settings.css';
 
 export const SplashScreen: React.FC = () => {
   const [joinLink, setJoinLink] = useState('');
   const [defaultRole, setDefaultRole] = useState<Role>('Chatter');
-  const [settings, setSettings] = useState<UserSettings>({ ...DEFAULT_SETTINGS });
+  const [settings, setSettings] = useState<UserSettings>(
+    settingsFromWire(DEFAULT_SETTINGS)
+  );
   const [avatarUrl, setAvatarUrl] = useState<string>('');
   const [showSettings, setShowSettings] = useState(false);
   const [settingsLoaded, setSettingsLoaded] = useState(false);

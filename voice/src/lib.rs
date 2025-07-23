@@ -221,7 +221,7 @@ struct Call {
     host_id: Option<String>, // The participant who mixes audio
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UserSettings {
     pub sound_on_user_join: bool,
@@ -229,6 +229,42 @@ pub struct UserSettings {
     pub sound_on_chat_message: bool,
     pub show_images_in_chat: bool,
     pub show_avatars: bool,
+    #[serde(default = "default_true")]
+    pub vad_adaptive: bool,
+    #[serde(default)]
+    pub vad_sensitivity: VadSensitivity,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VadSensitivity {
+    Low,
+    Medium,
+    High,
+}
+
+impl Default for VadSensitivity {
+    fn default() -> Self {
+        VadSensitivity::Medium
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for UserSettings {
+    fn default() -> Self {
+        Self {
+            sound_on_user_join: false,
+            sound_on_user_leave: false,
+            sound_on_chat_message: false,
+            show_images_in_chat: false,
+            show_avatars: false,
+            vad_adaptive: true,
+            vad_sensitivity: VadSensitivity::Medium,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

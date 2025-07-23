@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { UserSettings } from '../../../target/ui/caller-utils';
+import { VadSensitivityWire, toWireFormat } from '../types/settings';
 
 interface SettingsPanelProps {
   settings: UserSettings;
@@ -134,6 +135,57 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                 <img src={localAvatarUrl} alt="Avatar preview" />
               </div>
             )}
+          </div>
+        )}
+      </div>
+      
+      <div className="settings-section">
+        <h4>Voice Detection</h4>
+        
+        <label className="settings-toggle">
+          <input
+            type="checkbox"
+            checked={settings.vadAdaptive}
+            onChange={() => handleToggle('vadAdaptive')}
+          />
+          <span>Automatic sensitivity adjustment</span>
+        </label>
+        
+        {!settings.vadAdaptive && (
+          <div className="sensitivity-control">
+            <label>Voice sensitivity:</label>
+            <div className="sensitivity-buttons">
+              <button
+                className={`sensitivity-btn ${settings.vadSensitivity === 'Low' || toWireFormat(settings.vadSensitivity) === 'low' ? 'active' : ''}`}
+                onClick={() => onSettingsChange({
+                  ...settings,
+                  vadSensitivity: 'Low'
+                })}
+              >
+                Low
+              </button>
+              <button
+                className={`sensitivity-btn ${settings.vadSensitivity === 'Medium' || toWireFormat(settings.vadSensitivity) === 'medium' ? 'active' : ''}`}
+                onClick={() => onSettingsChange({
+                  ...settings,
+                  vadSensitivity: 'Medium'
+                })}
+              >
+                Medium
+              </button>
+              <button
+                className={`sensitivity-btn ${settings.vadSensitivity === 'High' || toWireFormat(settings.vadSensitivity) === 'high' ? 'active' : ''}`}
+                onClick={() => onSettingsChange({
+                  ...settings,
+                  vadSensitivity: 'High'
+                })}
+              >
+                High
+              </button>
+            </div>
+            <div className="sensitivity-note">
+              Low = More sensitive (detects quieter speech)
+            </div>
           </div>
         )}
       </div>

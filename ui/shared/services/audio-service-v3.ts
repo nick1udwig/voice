@@ -481,7 +481,7 @@ export class AudioServiceV3 {
   };
 
 
-  async initializeAudio(role: string, participantId: string, isHost: boolean): Promise<void> {
+  async initializeAudio(role: string, participantId: string, isHost: boolean, settings?: any): Promise<void> {
     
     // Initialize opus service only if it doesn't exist (needed for decoding)
     if (!this.opusService) {
@@ -507,12 +507,42 @@ export class AudioServiceV3 {
       
       // Initialize VAD for speakers
       if (!this.vadService) {
+        // Get threshold values based on sensitivity setting
+        let posThreshold = 0.5;
+        let negThreshold = 0.35;
+        let enableAdaptive = true;
+        
+        if (settings) {
+          enableAdaptive = settings.vadAdaptive !== false;
+          if (!enableAdaptive) {
+            // Use preset thresholds based on sensitivity setting
+            switch (settings.vadSensitivity) {
+              case 'Low':
+              case 'low':
+                posThreshold = 0.3;
+                negThreshold = 0.2;
+                break;
+              case 'High':
+              case 'high':
+                posThreshold = 0.7;
+                negThreshold = 0.5;
+                break;
+              case 'Medium':
+              case 'medium':
+              default:
+                posThreshold = 0.5;
+                negThreshold = 0.35;
+            }
+          }
+        }
+        
         this.vadService = new VadService({
           onSpeechStart: () => this.handleSpeechStart(),
           onSpeechEnd: () => this.handleSpeechEnd(),
-          positiveSpeechThreshold: 0.5,
-          negativeSpeechThreshold: 0.35,
-          minSpeechFrames: 3
+          positiveSpeechThreshold: posThreshold,
+          negativeSpeechThreshold: negThreshold,
+          minSpeechFrames: 3,
+          enableAdaptive: enableAdaptive
         });
         await this.vadService.initialize();
       }
@@ -553,6 +583,13 @@ export class AudioServiceV3 {
       if (!this.opusService) {
         throw new Error('Opus service not initialized');
       }
+      
+      // Set up audio level callback for VAD
+      this.opusService.setOnAudioLevelCallback((level: number) => {
+        if (this.vadService) {
+          this.vadService.updateAudioLevel(level);
+        }
+      });
       
       // Set up callback for encoded data (safe to call multiple times)
       this.opusService.setOnDataCallback((data: Uint8Array) => {
@@ -824,6 +861,21 @@ export class AudioServiceV3 {
     }
   }
 
+  updateVadSettings(settings: any): void {
+    if (!this.vadService || !settings) return;
+    
+    // Update adaptive mode
+    this.vadService.setAdaptiveEnabled(settings.vadAdaptive !== false);
+    
+    // If not adaptive, update thresholds based on sensitivity
+    if (!settings.vadAdaptive) {
+      // Reset the VAD to use new thresholds
+      // Note: Current VAD library doesn't support dynamic threshold updates
+      // so we'll need to reinitialize when thresholds change significantly
+      console.log('[AudioService] VAD settings updated', settings);
+    }
+  }
+  
   async cleanup(): Promise<void> {
     
     // Remove visibility handler

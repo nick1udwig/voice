@@ -1,6 +1,6 @@
 import { CallInfo, ParticipantInfo, ChatMessage, Role, UserSettings } from '../../../target/ui/caller-utils';
 import { AudioServiceV3 } from '../services/audio-service-v3';
-import { DEFAULT_SETTINGS } from '../types/settings';
+import { DEFAULT_SETTINGS, settingsToWire, settingsFromWire } from '../types/settings';
 import { notificationSounds } from '../utils/sounds';
 
 export interface BaseVoiceState {
@@ -78,7 +78,7 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
   audioLevels: new Map(),
   speakingStates: new Map(),
   callEnded: false,
-  mySettings: { ...DEFAULT_SETTINGS },
+  mySettings: settingsFromWire(DEFAULT_SETTINGS),
 
   // Actions
   joinCall: async (callId: string, authToken?: string | null, settings?: UserSettings) => {
@@ -139,12 +139,15 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
         const savedAvatarUrl = localStorage.getItem('avatarUrl');
         
         // Send JoinCall message with optional auth token and settings
+        const currentSettings = settings || get().mySettings;
+        const wireSettings = settingsToWire(currentSettings);
+        
         const joinMessage = {
           JoinCall: {
             callId: callId,
             authToken: nodeAuthToken,
             displayName: null,
-            settings: settings || get().mySettings,
+            settings: wireSettings,
             avatarUrl: savedAvatarUrl
           }
         };
@@ -246,9 +249,18 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
       // Update local state immediately
       set({ mySettings: settings });
       
+      // Update audio service VAD settings
+      const audioService = get().audioService;
+      if (audioService) {
+        audioService.updateVadSettings(settings);
+      }
+      
+      // Convert to wire format for backend
+      const wireSettings = settingsToWire(settings);
+      
       // Send to server
       ws.send(JSON.stringify({
-        UpdateSettings: settings
+        UpdateSettings: wireSettings
       }));
     } else {
     }
@@ -378,7 +390,9 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
         hostId: hostId || null,
         isMuted: true, // Everyone starts muted
         isAuthenticated: true, // Mark as authenticated after JoinSuccess
-        mySettings: myParticipant?.settings || { ...DEFAULT_SETTINGS },
+        mySettings: myParticipant?.settings ? 
+          settingsFromWire(myParticipant.settings) : 
+          settingsFromWire(DEFAULT_SETTINGS),
         currentCall: {
           id: callId,
           createdAt: Date.now(),
@@ -475,7 +489,9 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
       
       // Update our own settings if it's for us
       if (participantId === get().myParticipantId) {
-        set({ mySettings: settings });
+        // Convert from wire format
+        const convertedSettings = settingsFromWire(settings);
+        set({ mySettings: convertedSettings });
       }
       
       // Update participant info in the participants map
@@ -618,7 +634,7 @@ export const createBaseVoiceStore = (set: any, get: any): BaseVoiceStore => ({
     if (myRole && myParticipantId && audioService) {
       const isHost = store.hostId === myParticipantId;
 
-      audioService.initializeAudio(myRole, myParticipantId, isHost)
+      audioService.initializeAudio(myRole, myParticipantId, isHost, store.mySettings)
         .then(() => {
           // Update local stream in store
           const mediaStream = audioService.getMediaStream();

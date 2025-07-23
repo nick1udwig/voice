@@ -24,6 +24,7 @@ export class RawOpusService {
   private audioInput: MediaStreamAudioSourceNode | null = null;
   private processor: ScriptProcessorNode | null = null;
   private onDataCallback?: (data: Uint8Array) => void;
+  private onAudioLevelCallback?: (level: number) => void;
   private isRecording: boolean = false;
   private libopusReady: Promise<void>;
   private isMuted: boolean = true;
@@ -60,6 +61,10 @@ export class RawOpusService {
 
   setOnDataCallback(callback: (data: Uint8Array) => void): void {
     this.onDataCallback = callback;
+  }
+  
+  setOnAudioLevelCallback(callback: (level: number) => void): void {
+    this.onAudioLevelCallback = callback;
   }
 
   async startRecording(): Promise<void> {
@@ -99,6 +104,16 @@ export class RawOpusService {
         if (!this.encoder || !this.isRecording || this.isMuted) return;
 
         const inputData = e.inputBuffer.getChannelData(0);
+        
+        // Calculate RMS audio level for VAD
+        if (this.onAudioLevelCallback && !this.isMuted) {
+          let sum = 0;
+          for (let i = 0; i < inputData.length; i++) {
+            sum += inputData[i] * inputData[i];
+          }
+          const rms = Math.sqrt(sum / inputData.length);
+          this.onAudioLevelCallback(rms);
+        }
         
         // Append new samples to buffer
         const newBuffer = new Float32Array(sampleBuffer.length + inputData.length);
