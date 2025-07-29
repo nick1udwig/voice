@@ -4,10 +4,11 @@
   "image": "https://raw.githubusercontent.com/nick1udwig/voice/refs/heads/master/ui/public/voice1024.png",
   "properties": {
     "package_name": "voice",
-    "current_version": "0.1.0",
+    "current_version": "0.1.1",
     "publisher": "nick.hypr",
     "mirrors": ["nick.hypr", "nick1udwig.os", "diligence.os"],
     "code_hashes": {
+      "0.1.1": "904c000b26c435b0f6942d07476441ae81dff2b1e1b51fd81b640593186984c7",
       "0.1.0": "a5497bd21b12bbabda28808ead1e631a7f29e921b40dee56f7cdb29b9255e0dd"
     },
     "wit_version": 1,
