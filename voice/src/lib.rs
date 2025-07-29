@@ -497,7 +497,7 @@ impl VoiceState {
             .ok_or_else(|| "Invalid call ID format: no host node found".to_string())?;
 
         // Build the target address for the host node
-        let target = Address::new(host_node, ("voice", "voice", "nick.hypr"));
+        let target = Address::new(host_node, ("voice", "voice", "ware.hypr"));
 
         // Create the handshake request using our properly serialized type
         let handshake_req = NodeHandshakeReq {

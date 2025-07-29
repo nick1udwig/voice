@@ -13,7 +13,7 @@ declare global {
 
 export const CallScreenWrapper: React.FC = () => {
   // Extract call ID from the URL path
-  // URL format: /voice:voice:nick.hypr/call/{call-id}
+  // URL format: /voice:voice:ware.hypr/call/{call-id}
   const pathParts = window.location.pathname.split('/');
   const callId = pathParts[pathParts.length - 1] || window.VOICE_CALL_ID || '';
 

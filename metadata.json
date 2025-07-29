@@ -5,15 +5,15 @@
   "properties": {
     "package_name": "voice",
     "current_version": "0.1.1",
-    "publisher": "nick.hypr",
-    "mirrors": ["nick.hypr", "nick1udwig.os", "diligence.os"],
+    "publisher": "ware.hypr",
+    "mirrors": ["ware.hypr", "nick.hypr", "nick1udwig.os", "diligence.os"],
     "code_hashes": {
-      "0.1.1": "904c000b26c435b0f6942d07476441ae81dff2b1e1b51fd81b640593186984c7",
+      "0.1.1": "6b59b59587f75aa521bef9a44ae301a0725492fb92f0a3edd82e9c498f338f4f",
       "0.1.0": "a5497bd21b12bbabda28808ead1e631a7f29e921b40dee56f7cdb29b9255e0dd"
     },
     "wit_version": 1,
     "dependencies": []
   },
-  "external_url": "https://github.com/nick1udwig/voice",
+  "external_url": "https://github.com/hyperware-ai/voice",
   "animation_url": ""
 }

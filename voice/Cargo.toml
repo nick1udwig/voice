@@ -1,21 +1,15 @@
 [dependencies]
 anyhow = "1.0.97"
+base64 = "0.22"
+dasp = "0.11"
+http = "1.1"
+opus = "0.3"
 process_macros = "0.1"
+rand = "0.8"
+ringbuf = "0.3"
 rmp-serde = "1.3.0"
 serde_json = "1.0"
 wit-bindgen = "0.36.0"
-rand = "0.8"
-http = "1.1"
-uuid = { version = "1.10", features = ["v4", "serde"] }
-# Audio processing dependencies
-opus = "0.3"
-# rubato = "0.15"  # May have similar issues
-dasp = "0.11"
-ringbuf = "0.3"
-base64 = "0.22"
-
-[dependencies.caller-utils]
-path = "../target/caller-utils"
 
 [dependencies.hyperprocess_macro]
 git = "https://github.com/hyperware-ai/hyperprocess-macro"
@@ -28,6 +22,13 @@ rev = "1cdbf54"
 [dependencies.serde]
 features = ["derive"]
 version = "1.0"
+
+[dependencies.uuid]
+features = [
+    "v4",
+    "serde",
+]
+version = "1.10"
 
 [features]
 simulation-mode = []
